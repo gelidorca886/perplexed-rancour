@@ -51,11 +51,17 @@ const NEAR   = 0.6;
 // holds the camera still for HOLD of the scroll on either side, and the
 // travel between stops eases in and out. When scrolling stops between two
 // stops, it settles into one (toward the direction you were going).
-const STOPS     = [0, 0.34, 0.64, 1];   // path p of each stop (must match KEYS rows)
+const STOPS       = [0, 0.34, 0.64, 1];   // path p of each stop (must match KEYS rows)
+const STOP_SCROLL = [0, 0.24, 0.48, 1];   // where each stop sits on the scrollbar — the reveal gets the last half
+const STOP_FOCUS  = [12, 11, 10, 34];     // distance of the subject at each stop
+const BACK_AT_STOP = [0.5, 0.8, 0.8, 0];  // how much haze + blur goes on everything well behind the subject, at each stop
+const SNAP_TIMES  = [1100, 1300, 6500];   // ms to settle across each stretch (the last one is the reveal)
+// pacing inside a stretch: [scroll fraction, path fraction] points. The reveal rushes
+// through the clouds and spends most of its time on the pull-back to the star.
+const SEG_SHAPE   = [null, null, [[0, 0], [0.2, 0.306], [0.34, 0.611], [1, 1]]];
 const HOLD      = 0.055;                 // fraction of total scroll each stop holds for (each side)
 const SNAP      = !/nosnap/.test(location.search);  // settle into a stop when scrolling stops (?nosnap to disable)
 const SNAP_WAIT = 180;                   // ms of no scrolling before settling
-const SNAP_TIME = 900;                   // ms the settle takes
 const FOG_AT_STOP = 0.5, FOG_BETWEEN = 1.35;  // haze multiplier: clear at stops, thick between
 
 const SNOW_SWEEP = 0.25;   // how much falling snow slides sideways as the camera circles (1 = physically right)
@@ -119,12 +125,23 @@ const camAtAltitude = y => CAM_BY_Y[clamp(Math.round(y * 4), 0, 400)];
 const facing = phi => Math.PI / 2 - phi;
 
 // scroll s (0..1) → path p, with holds at each stop
-const S_STOPS = STOPS.map((_, i) => i / (STOPS.length - 1));
+const S_STOPS = STOP_SCROLL;
+function shapeSeg(i, t) {
+  const sh = SEG_SHAPE[i]; if (!sh) return t;
+  let j = 0; while (j < sh.length - 2 && t > sh[j + 1][0]) j++;
+  return lerp(sh[j][1], sh[j + 1][1], (t - sh[j][0]) / (sh[j + 1][0] - sh[j][0]));
+}
+function focusBack(p) {
+  let i = 0; while (i < STOPS.length - 2 && p > STOPS[i + 1]) i++;
+  const t = clamp((p - STOPS[i]) / (STOPS[i + 1] - STOPS[i]), 0, 1);
+  const near = t < 0.5 ? i : i + 1, atStop = 1 - Math.sin(Math.PI * t);
+  return { focus: lerp(STOP_FOCUS[i], STOP_FOCUS[i + 1], smooth(0, 1, t)), back: BACK_AT_STOP[near] * atStop };
+}
 let scrollToPath = function (s) {
   for (let i = 0; i < STOPS.length - 1; i++) {
     const a = S_STOPS[i] + HOLD, b = S_STOPS[i + 1] - HOLD;
     if (s <= a) return STOPS[i];
-    if (s < b) return lerp(STOPS[i], STOPS[i + 1], smoother((s - a) / (b - a)));
+    if (s < b) return lerp(STOPS[i], STOPS[i + 1], shapeSeg(i, smoother((s - a) / (b - a))));
   }
   return STOPS[STOPS.length - 1];
 };
@@ -265,7 +282,7 @@ def('fx/shaft', 32, 256, (g, w, h) => {
 }, 'light shaft, white');
 for (let v = 0; v < 3; v++) def(`fx/puff-${v}`, 128, 96, (g, w, h) => {
   const r = rng(500 + v);
-  for (let i = 0; i < 14; i++) radial(g, w * (0.32 + r() * 0.36), h * (0.42 + r() * 0.16), w * (0.08 + r() * 0.1), [[0, 'rgba(255,255,255,.35)'], [1, 'rgba(255,255,255,0)']]);
+  for (let i = 0; i < 9; i++) radial(g, w * (0.36 + r() * 0.28), h * (0.44 + r() * 0.12), w * (0.1 + r() * 0.1), [[0, 'rgba(255,255,255,.22)'], [0.5, 'rgba(255,255,255,.1)'], [1, 'rgba(255,255,255,0)']]);
 }, 'mist / cloud puff, white, very soft edges');
 def('fx/rays', 256, 256, (g, w) => {
   g.translate(w / 2, w / 2);
@@ -278,25 +295,113 @@ def('fx/rays', 256, 256, (g, w) => {
 }, 'star burst rays, white');
 
 // --- ornaments
-const ORN_COLORS = ['#b3122e', '#d9a520', '#1d4fb8', '#c9ccd6', '#7a2bb0', '#0f8a6a'];
-const BALL_W = 96, BALL_H = 150;
-function drawBall(g, col, banded) {
-  const W = BALL_W, H = BALL_H, cy = H - W / 2, r = W * 0.46;
-  g.strokeStyle = 'rgba(230,210,160,.8)'; g.lineWidth = 2;
-  g.beginPath(); g.moveTo(W / 2, 0); g.lineTo(W / 2, cy - r); g.stroke();
-  g.fillStyle = '#c2a457'; g.fillRect(W / 2 - r * 0.22, cy - r * 1.1, r * 0.44, r * 0.24);
-  const gr = g.createRadialGradient(W * 0.36, cy - r * 0.35, W * 0.03, W / 2, cy, r);
-  gr.addColorStop(0, '#fff'); gr.addColorStop(0.12, col); gr.addColorStop(0.75, col); gr.addColorStop(1, '#000');
-  g.fillStyle = gr; g.beginPath(); g.arc(W / 2, cy, r, 0, TAU); g.fill();
-  if (banded) {
-    g.save(); g.beginPath(); g.arc(W / 2, cy, r, 0, TAU); g.clip();
-    g.fillStyle = 'rgba(255,255,255,.85)'; g.fillRect(0, cy - r * 0.08, W, r * 0.2);
-    g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(0, cy + r * 0.24, W, r * 0.07); g.fillRect(0, cy - r * 0.36, W, r * 0.07);
-    g.restore();
-  }
+// --- C9 incandescent bulbs
+const BULB_COLS  = ['#e3242b', '#1f9e4a', '#2a5ce0', '#ff8a1c', '#e8389a', '#ffd34d'];
+const BULB_LIGHT = [[1, 0.32, 0.18], [0.4, 1, 0.35], [0.4, 0.55, 1], [1, 0.58, 0.18], [1, 0.38, 0.68], [1, 0.86, 0.5]];
+const BULB_W = 0.7, BULB_H = 1.15;
+const tone = (h, k) => { const c = hex(h); return css(k > 0 ? c.map(v => lerp(v, 1, k)) : c.map(v => v * (1 + k))); };
+function drawBulb(g, w, h, col) {
+  const sy = h * 0.72;
+  const glass = new Path2D();
+  glass.moveTo(w * 0.32, sy);
+  glass.bezierCurveTo(w * 0.0, h * 0.48, w * 0.14, h * 0.06, w * 0.5, h * 0.02);
+  glass.bezierCurveTo(w * 0.86, h * 0.06, w * 1.0, h * 0.48, w * 0.68, sy);
+  glass.closePath();
+  const gr = g.createRadialGradient(w * 0.5, h * 0.4, 1, w * 0.5, h * 0.4, w * 0.6);
+  gr.addColorStop(0, '#fffbe6'); gr.addColorStop(0.22, tone(col, 0.45)); gr.addColorStop(0.7, col); gr.addColorStop(1, tone(col, -0.45));
+  g.fillStyle = gr; g.fill(glass);
+  g.save(); g.clip(glass);
+  g.fillStyle = 'rgba(255,255,255,.55)';
+  g.beginPath(); g.ellipse(w * 0.34, h * 0.26, w * 0.07, h * 0.14, -0.35, 0, TAU); g.fill();
+  g.restore();
+  g.fillStyle = '#123018'; g.fillRect(w * 0.3, sy - 2, w * 0.4, h - sy);
+  g.fillStyle = '#1f4a26';
+  for (let y = sy + 3; y < h - 2; y += 5) g.fillRect(w * 0.3, y, w * 0.4, 2);
 }
-ORN_COLORS.forEach((c, i) => def(`deco/ball-${i}`, BALL_W, BALL_H, g => drawBall(g, c, 0), 'decorative ornament; hook point = top centre'));
-LINKS.ornaments.forEach((page, i) => def(`link/${page}`, BALL_W, BALL_H, g => drawBall(g, ORN_COLORS[i % 6], 1), 'clickable ornament; hook point = top centre'));
+BULB_COLS.forEach((c, i) => def(`deco/bulb-${i}`, 48, 80, (g, w, h) => drawBulb(g, w, h, c), 'C9 light bulb, glass up, socket at the bottom edge (that\'s where it attaches); halo is added in code'));
+
+// --- ornaments: six shapes
+const ORN_COLORS = ['#b3122e', '#d9a520', '#1d4fb8', '#c9ccd6', '#7a2bb0', '#0f8a6a'];
+const ORN_SHAPES = ['ball', 'drop', 'finial', 'bell', 'onion', 'icicle'];
+const BALL_W = 96, BALL_H = 150;
+function drawOrn(g, shape, col, banded) {
+  const W = BALL_W, H = BALL_H, cx = W / 2, body = new Path2D();
+  let capY, bb;
+  switch (shape) {
+    case 'ball': { const r = W * 0.46, cy = H - W / 2; body.arc(cx, cy, r, 0, TAU); capY = cy - r - 6; bb = [cx - r, cy - r, cx + r, cy + r]; break; }
+    case 'drop': {
+      const top = 46, bot = H - 3, a = (bot - top) / 2, my = (top + bot) / 2;
+      for (let i = 0; i <= 64; i++) { const th = i / 64 * TAU, x = cx + W * 0.44 * Math.sin(th) * Math.pow(Math.sin(th / 2), 1.6), y = my - a * Math.cos(th); i ? body.lineTo(x, y) : body.moveTo(x, y); }
+      body.closePath(); capY = top - 6; bb = [cx - W * 0.44, top, cx + W * 0.44, bot]; break;
+    }
+    case 'finial': {
+      body.moveTo(cx, H - 2);
+      body.bezierCurveTo(cx + W * 0.05, H - 40, cx + W * 0.36, 94, cx + W * 0.31, 74);
+      body.bezierCurveTo(cx + W * 0.27, 58, cx + W * 0.1, 52, cx, 50);
+      body.bezierCurveTo(cx - W * 0.1, 52, cx - W * 0.27, 58, cx - W * 0.31, 74);
+      body.bezierCurveTo(cx - W * 0.36, 94, cx - W * 0.05, H - 40, cx, H - 2);
+      capY = 44; bb = [cx - W * 0.33, 50, cx + W * 0.33, H]; break;
+    }
+    case 'bell': {
+      body.moveTo(cx - W * 0.14, 52);
+      body.bezierCurveTo(cx - W * 0.32, 56, cx - W * 0.3, 104, cx - W * 0.47, H - 20);
+      body.quadraticCurveTo(cx, H - 8, cx + W * 0.47, H - 20);
+      body.bezierCurveTo(cx + W * 0.3, 104, cx + W * 0.32, 56, cx + W * 0.14, 52);
+      body.closePath();
+      g.fillStyle = '#c2a457'; g.beginPath(); g.arc(cx, H - 9, 6, 0, TAU); g.fill();   // clapper
+      capY = 44; bb = [cx - W * 0.47, 52, cx + W * 0.47, H - 12]; break;
+    }
+    case 'onion': {
+      body.moveTo(cx, 48);
+      body.bezierCurveTo(cx + W * 0.1, 62, cx + W * 0.52, 78, cx + W * 0.45, 108);
+      body.bezierCurveTo(cx + W * 0.38, 130, cx + W * 0.08, 134, cx, H - 2);
+      body.bezierCurveTo(cx - W * 0.08, 134, cx - W * 0.38, 130, cx - W * 0.45, 108);
+      body.bezierCurveTo(cx - W * 0.52, 78, cx - W * 0.1, 62, cx, 48);
+      capY = 42; bb = [cx - W * 0.47, 48, cx + W * 0.47, H]; break;
+    }
+    case 'icicle': {
+      body.moveTo(cx - W * 0.13, 44); body.lineTo(cx + W * 0.13, 44);
+      body.bezierCurveTo(cx + W * 0.11, 90, cx + W * 0.04, 122, cx, H - 2);
+      body.bezierCurveTo(cx - W * 0.04, 122, cx - W * 0.11, 90, cx - W * 0.13, 44);
+      capY = 38; bb = [cx - W * 0.13, 44, cx + W * 0.13, H]; break;
+    }
+  }
+  g.strokeStyle = 'rgba(230,210,160,.8)'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(cx, 0); g.lineTo(cx, capY); g.stroke();
+  g.fillStyle = '#c2a457'; g.fillRect(cx - W * 0.1, capY, W * 0.2, 8);
+  const [x0, y0, x1, y1] = bb;
+  const gr = g.createRadialGradient(lerp(x0, x1, 0.34), lerp(y0, y1, 0.28), 2, (x0 + x1) / 2, (y0 + y1) / 2, Math.max(x1 - x0, y1 - y0) * 0.7);
+  gr.addColorStop(0, '#fff'); gr.addColorStop(0.1, col); gr.addColorStop(0.68, col); gr.addColorStop(1, '#000');
+  g.fillStyle = gr; g.fill(body);
+  g.save(); g.clip(body);
+  if (shape === 'finial') { g.fillStyle = 'rgba(0,0,0,.18)'; for (let y = 60; y < H; y += 9) g.fillRect(0, y, W, 2); g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(cx - W * 0.16, 56, 4, H); }
+  if (shape === 'icicle') { g.strokeStyle = 'rgba(255,255,255,.6)'; g.lineWidth = 2; for (let y = 40; y < H; y += 12) { g.beginPath(); g.moveTo(cx - 12, y); g.lineTo(cx + 12, y + 9); g.stroke(); } }
+  if (shape === 'onion') { g.fillStyle = 'rgba(255,225,140,.55)'; for (const dx of [-0.24, 0, 0.24]) { g.beginPath(); g.ellipse(cx + dx * W, 106, 3, 40, dx * 0.6, 0, TAU); g.fill(); } }
+  if (shape === 'drop') { g.strokeStyle = 'rgba(255,255,255,.35)'; g.lineWidth = 4; for (let y = 50; y < H + 40; y += 16) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y - 30); g.stroke(); } }
+  if (shape === 'bell') { g.fillStyle = 'rgba(255,230,160,.6)'; g.fillRect(0, H - 34, W, 5); }
+  if (banded) {
+    const my = (y0 + y1) / 2 + (shape === 'ball' ? 0 : 6);
+    g.fillStyle = 'rgba(255,255,255,.85)'; g.fillRect(0, my - 5, W, 10);
+    g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(0, my + 12, W, 3); g.fillRect(0, my - 15, W, 3);
+  }
+  g.restore();
+}
+const DECO_ORN = [];
+ORN_SHAPES.forEach(shape => {
+  const cols = shape === 'ball' ? ORN_COLORS : shape === 'icicle' ? ['#cfe6ff', '#c9ccd6'] : [ORN_COLORS[0], ORN_COLORS[2], ORN_COLORS[1], ORN_COLORS[5]];
+  cols.forEach((c, i) => { def(`deco/orn-${shape}-${i}`, BALL_W, BALL_H, g => drawOrn(g, shape, c, 0), `decorative ${shape} ornament; hook point = top centre`); DECO_ORN.push({ shape, name: `deco/orn-${shape}-${i}` }); });
+});
+const ORN_WEIGHT = { ball: 0.34, drop: 0.14, finial: 0.15, bell: 0.1, onion: 0.15, icicle: 0.12 };
+function pickOrn(y) {
+  let x = R(); const icy = y > 60 ? 0.2 : 0;   // more icicles up in the snow
+  if (R() < icy) return DECO_ORN.filter(o => o.shape === 'icicle')[(R() * 2) | 0].name;
+  let shape = 'ball';
+  for (const k of ORN_SHAPES) { if ((x -= ORN_WEIGHT[k]) < 0) { shape = k; break; } }
+  const opts = DECO_ORN.filter(o => o.shape === shape);
+  return opts[(R() * opts.length) | 0].name;
+}
+const LINK_SHAPES = ['ball', 'finial', 'onion', 'drop'];
+LINKS.ornaments.forEach((page, i) => def(`link/${page}`, BALL_W, BALL_H, g => drawOrn(g, LINK_SHAPES[i % 4], ORN_COLORS[i % 6], 1), 'clickable ornament; hook point = top centre'));
 function drawCane(g, w, h) {
   const hookR = w * 0.26, x0 = w * 0.62, y0 = hookR + 6;
   const path = () => { g.beginPath(); g.arc(x0 - hookR, y0, hookR, 0, Math.PI, true); g.moveTo(x0, y0); g.lineTo(x0, h - 8); };
@@ -403,16 +508,17 @@ function addBlob(x, y, z, size, inner, keep = false) {
           addBlob(p0[0] + Math.cos(sa2) * sl * f, p0[1] - f * 0.6 * sizeK, p0[2] + Math.sin(sa2) * sl * f, 2.8 * sizeK * rand(0.85, 1.15), t0);
         }
       }
-      const nl = 2 + ((R() * 4) | 0);
-      for (let i = 0; i < nl; i++) {
-        const p = pt(rand(0.25, 1)), cold = y > 70;
-        const col = cold ? [[0.75, 0.88, 1], [1, 1, 1], [0.6, 0.75, 1]][(R() * 3) | 0] : [[1, 0.78, 0.42], [1, 0.52, 0.34], [1, 0.9, 0.62], [1, 0.36, 0.42]][(R() * 4) | 0];
-        lights.push({ kind: 1, x: p[0] + rand(-0.4, 0.4), y: p[1] - 0.3 * sizeK, z: p[2] + rand(-0.4, 0.4), col, ph: rand(0, TAU), sp: rand(0.8, 2.6) });
+      const nb = 2 + ((R() * 2.6) | 0);
+      for (let i = 0; i < nb; i++) {
+        const p = pt(rand(0.2, 1)), ci = (R() * BULB_COLS.length) | 0;
+        if (!nearCameraPath(p[0], p[1], p[2], 3)) lights.push({ kind: 1, x: p[0] + rand(-0.4, 0.4), y: p[1] + rand(-0.1, 0.3) * sizeK, z: p[2] + rand(-0.4, 0.4),
+          ci, spr: `deco/bulb-${ci}`, tilt: rand(-0.55, 0.55), ph: rand(0, TAU) });
       }
-      if (y > 7 && y < 93 && R() < 0.3) { // decorative hangers
+      if (y > 7 && y < 93 && R() < 0.3) { // decorative hangers (kept off the camera's path)
         const p = pt(rand(0.55, 0.95));
+        if (!nearCameraPath(p[0], p[1], p[2], 4))
         if (y > 46 && R() < 0.3) things.push({ kind: 3, deco: true, x: p[0], y: p[1] - 0.3 * sizeK, z: p[2], len: 2.0 * sizeK, spr: 'deco/cane', h: 0, act: -1, sw: rand(0, TAU) });
-        else things.push({ kind: 2, deco: true, x: p[0], y: p[1] - 0.35 * sizeK, z: p[2], rad: (y < 45 ? 0.8 : 0.65) * sizeK + 0.15, spr: `deco/ball-${(R() * 6) | 0}`, h: 0, act: -1, sw: rand(0, TAU) });
+        else things.push({ kind: 2, deco: true, x: p[0], y: p[1] - 0.35 * sizeK, z: p[2], rad: rand(0.6, 0.95) * sizeK + 0.15, spr: pickOrn(y), h: 0, act: -1, sw: rand(0, TAU) });
       }
     }
     y += lerp(3.4, 2.0, h) * rand(0.9, 1.1); tier++;
@@ -424,8 +530,8 @@ function addBlob(x, y, z, size, inner, keep = false) {
 }
 
 // ---- the middle stops: clear a hollow in front of the camera, then dress it
-function clearHollow(pose, depth, ru, rv) {
-  const inside = o => { const q = toView(pose, o.x, o.y, o.z); return q.d > 0 && q.d < depth && (q.u / ru) ** 2 + (q.v / rv) ** 2 < 1; };
+function clearHollow(pose, depth, ru, rv, v0 = 0) {
+  const inside = o => { const q = toView(pose, o.x, o.y, o.z); return q.d > 0 && q.d < depth && (q.u / ru) ** 2 + ((q.v - v0) / rv) ** 2 < 1; };
   for (const list of [blobs, lights, things]) for (let i = list.length - 1; i >= 0; i--) if (!list[i].keep && inside(list[i])) list.splice(i, 1);
 }
 function bough(pose, u0, u1, v, d, size = 2.6) { // a run of needle clusters across the view
@@ -434,7 +540,15 @@ function bough(pose, u0, u1, v, d, size = 2.6) { // a run of needle clusters acr
     const p = inView(pose, lerp(u0, u1, i / n), v + rand(-0.01, 0.01), d + rand(-0.6, 0.6));
     addBlob(p[0], p[1], p[2], size * rand(0.85, 1.15), 0.9, true);
   }
+  // a string of bulbs along the bough, in the classic colour order
+  const nb = Math.max(1, Math.round(Math.abs(u1 - u0) * d / 1.6));
+  for (let i = 0; i < nb; i++) {
+    const p = inView(pose, lerp(u0, u1, (i + 0.5) / nb), v - 0.012, d - 1.2);
+    const ci = (bulbSeq++) % BULB_COLS.length;
+    lights.push({ kind: 1, x: p[0], y: p[1], z: p[2], ci, spr: `deco/bulb-${ci}`, tilt: rand(-0.35, 0.35), ph: rand(0, TAU), keep: true });
+  }
 }
+let bulbSeq = 0;
 const anim = () => ({ h: 0, act: -1, sw: rand(0, TAU) });
 const pointLights = [];
 function lantern(pose, u, v, d) {
@@ -473,7 +587,9 @@ function lantern(pose, u, v, d) {
   bough(P, -0.2, 0.22, 0.42, 13.5, 3);
 }
 {
-  // STOP 1 — gifts on the floor
+  // STOP 1 — gifts on the floor, a lit bough hanging over them
+  clearHollow(POSE[0], 15, 0.85, 0.22, 0.06);
+  bough(POSE[0], -0.62, 0.62, 0.4, 10, 3);
   const a0 = facing(POSE[0].phi);
   const slots = [[-0.42, 10.5], [-0.14, 13.5], [0.12, 9], [0.38, 12.5]];
   LINKS.gifts.forEach((page, i) => {
@@ -487,7 +603,7 @@ function lantern(pose, u, v, d) {
 }
 // STOP 4 — the star
 things.push({ kind: 6, x: 0, y: 102.5, z: 0, rad: 3.4, spr: 'link/star', page: LINKS.star, ...anim() });
-pointLights.push({ x: 0, y: 102.5, z: 0, r: 16, col: [1.0, 0.8, 0.45] });
+pointLights.push({ x: 0, y: 102.5, z: 0, r: 16, col: [1.0, 0.8, 0.45], reveal: true });
 
 // mist inside the tree + the cloud layer the tree pokes through
 for (let i = 0; i < 170; i++) {
@@ -499,6 +615,13 @@ for (let i = 0; i < 260; i++) {
   const y = rand(62, 76), a = rand(0, TAU), r = Math.pow(R(), 0.7) * 140;
   puffs.push({ kind: 7, x: Math.cos(a) * r, y, z: Math.sin(a) * r, size: rand(14, 34), rot: rand(-0.15, 0.15), spr: `fx/puff-${(R() * 3) | 0}`,
     col: [0.72, 0.8, 0.98], a: rand(0.16, 0.32) });
+}
+// keep mist out of the stops' framing — haze does that job there
+for (const [i, depth] of [[0, 15], [1, 17], [2, 16]]) {
+  for (let j = puffs.length - 1; j >= 0; j--) {
+    const q = toView(POSE[i], puffs[j].x, puffs[j].y, puffs[j].z);
+    if (q.d > -3 && q.d < depth && Math.abs(q.u) < 1.3 && Math.abs(q.v) < 1) puffs.splice(j, 1);
+  }
 }
 for (let i = 0; i < 10; i++) {
   const a = rand(0, TAU), r = rand(4, 26);
@@ -521,7 +644,7 @@ await Promise.all(manifest.map(name => new Promise(res => {
 })));
 
 // Slots grow to fit your drawing's resolution (up to 4×). The atlas grows to 4096 if it has to.
-const PAD = 28;
+const PAD = 40;
 const cellOf = s => {
   const im = artImgs[s.name];
   const k = im ? clamp(Math.min(im.width * s.inner / s.w, im.height * s.inner / s.h), 1, 4) : 1;
@@ -529,7 +652,8 @@ const cellOf = s => {
 };
 function packInto(size) {
   let shX = 0, shY = 0, shH = 0; const out = [];
-  for (const s of SPEC) {
+  const order = [...SPEC].sort((a, b) => cellOf(b)[1] - cellOf(a)[1]);   // tallest first packs tight shelves
+  for (const s of order) {
     const [w, h] = cellOf(s);
     if (shX + w + PAD > size) { shX = 0; shY += shH + PAD; shH = 0; }
     if (shY + h + PAD > size) return null;
@@ -597,23 +721,24 @@ void main(){
   vec2 px = anchor + local;
   gl_Position = vec4(px.x/u_vp.x*2.0-1.0, 1.0-px.y/u_vp.y*2.0, 0.0, 1.0);
   v_uv = mix(a_uv.xy, a_uv.zw, c);
-  v_tint = a_tint; v_p = a_p.xyz; v_d = d; v_dof = a_p.w > 0.0 ? 1.0 : 0.0;
+  v_tint = a_tint; v_p = a_p.xyz; v_d = d; v_dof = (a_p.w > 0.0 && a_p.x < 0.5) ? 1.0 : 0.0;   // glows never get mip-blurred
   v_wp = vec3(a_pos.x, a_pos.y + (a_off.y - c.y) * a_size.y, a_pos.z);
   float fade = smoothstep(${NEAR.toFixed(2)}, abs(a_p.w), d);
   float scr = abs(a_size.y) * s / u_vp.y;
-  fade *= 1.0 - smoothstep(1.4, 3.2, scr);
+  fade *= a_p.w < -4.0 ? 1.0 - smoothstep(0.35, 0.9, scr) : 1.0 - smoothstep(1.4, 3.2, scr);   // mist never becomes a veil over the screen
   v_fade = fade;
 }`;
 const FS = `#version 300 es
 precision highp float;
-uniform sampler2D u_tex; uniform vec3 u_haze; uniform float u_k, u_camY;
+uniform sampler2D u_tex; uniform vec3 u_haze; uniform float u_k, u_camY, u_focus, u_back;
 uniform vec3 u_lw, u_lm, u_lc;
 uniform vec4 u_pl[${NPL}]; uniform vec3 u_plc[${NPL}];
 in vec2 v_uv; in vec4 v_tint; in vec3 v_p; in float v_d; in vec3 v_wp; in float v_fade; in float v_dof;
 out vec4 o;
 void main(){
   float d = v_d;
-  float bias = ((1.0 - smoothstep(0.8, 6.0, d)) * 3.2 + smoothstep(30.0, 90.0, d) * 1.2) * v_dof;
+  float bias = ((1.0 - smoothstep(0.8, 6.0, d)) * 3.2 + smoothstep(30.0, 90.0, d) * 1.2
+              + smoothstep(u_focus + 3.0, u_focus + 18.0, d) * 2.4 * u_back) * v_dof;
   vec4 t = texture(u_tex, v_uv, bias);
   vec3 base = t.rgb * v_tint.rgb;
   vec3 col = base;
@@ -632,8 +757,11 @@ void main(){
     }
     col = mix(col, col * lc * L + base * pl * mix(1.0, 0.5, near), v_p.y);
   }
-  float fog = (1.0 - exp(-u_k * max(0.0, d - 2.5))) * v_p.z;
-  col = mix(col, u_haze * t.a, fog);
+  float fog = 1.0 - exp(-u_k * max(0.0, d - 2.5));
+  float back = smoothstep(u_focus + 2.0, u_focus + 16.0, d) * u_back;   // push what's behind the subject back
+  fog = (1.0 - (1.0 - fog) * (1.0 - back)) * v_p.z;
+  if (v_p.x > 0.5) col *= 1.0 - fog * 0.85;          // light fades into haze
+  else col = mix(col, u_haze * t.a, fog);             // surfaces dissolve into it
   float a = t.a * v_tint.a * v_fade;
   col *= v_tint.a * v_fade;
   o = vec4(col, a * (1.0 - v_p.x));
@@ -650,7 +778,7 @@ gl.linkProgram(prog);
 if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
 gl.useProgram(prog);
 const U = {};
-for (const n of ['u_cam', 'u_sc', 'u_F', 'u_hz', 'u_vp', 'u_tex', 'u_haze', 'u_k', 'u_camY', 'u_lw', 'u_lm', 'u_lc', 'u_pl', 'u_plc']) U[n] = gl.getUniformLocation(prog, n);
+for (const n of ['u_cam', 'u_sc', 'u_F', 'u_hz', 'u_vp', 'u_tex', 'u_haze', 'u_k', 'u_camY', 'u_lw', 'u_lm', 'u_lc', 'u_pl', 'u_plc', 'u_focus', 'u_back']) U[n] = gl.getUniformLocation(prog, n);
 
 const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
 const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
@@ -716,7 +844,7 @@ for (const ev of ['wheel', 'touchstart', 'keydown', 'mousedown']) addEventListen
 
 function maybeSnap(now) {
   if (snap) {
-    const k = clamp((now - snap.t0) / SNAP_TIME, 0, 1), e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    const k = clamp((now - snap.t0) / snap.dur, 0, 1), e = 0.5 - 0.5 * Math.cos(Math.PI * k);
     window.scrollTo(0, lerp(snap.from, snap.to, e));
     if (k >= 1) { snap = null; sPrev = scrollS(); }
     return;
@@ -732,7 +860,8 @@ function maybeSnap(now) {
   else { const f = (s - a) / (b - a); target = (lastDir > 0 ? f > 0.15 : f > 0.85) ? i + 1 : i; }
   if (target === null) return;
   const to = S_STOPS[target] * scrollMax();
-  if (Math.abs(to - scrollY) > 2) snap = { from: scrollY, to, t0: now };
+  const segPx = (S_STOPS[i + 1] - S_STOPS[i]) * scrollMax();
+  if (Math.abs(to - scrollY) > 2) snap = { from: scrollY, to, t0: now, dur: SNAP_TIMES[i] * clamp(Math.abs(to - scrollY) / segPx, 0.3, 1) };
 }
 
 addEventListener('pointermove', e => { px = e.clientX; py = e.clientY; pointerIn = true; mx = (px / W) * 2 - 1; my = (py / H) * 2 - 1; });
@@ -872,7 +1001,9 @@ function drawSky(t, dt, at) {
 
 // ================================================================ EMITTERS
 let hits = [];
+const SKIP = new Set((new URLSearchParams(location.search).get('skip') || '').split(',').filter(Boolean).map(Number));   // ?skip=7,8 hides kinds (debug)
 function emit(o, t) {
+  if (SKIP.has(o.kind)) return;
   switch (o.kind) {
     case 0: {
       const w = o.size * NEEDLE_K;
@@ -885,9 +1016,13 @@ function emit(o, t) {
       }
       break;
     }
-    case 1: {
-      const tw = 0.55 + 0.45 * Math.sin(t * o.sp + o.ph), sz = 0.7 + tw * 0.6;
-      push(o.x, o.y, o.z, 0, sz, sz, 0.5, 0.5, UV.glow, o.col[0], o.col[1], o.col[2], 0.55 + 0.45 * tw, 1, 0, 0.4, 1.0);
+    case 1: { // C9 bulb: a wide spill of coloured light, a hot halo, the glass, the filament hot-spot
+      const L = BULB_LIGHT[o.ci], fl = 0.94 + 0.06 * Math.sin(t * 0.6 + o.ph);
+      const c = bOff(o.x, o.y, o.z, 0, -BULB_H * 0.56, o.tilt);
+      push(c[0], c[1], c[2], 0, 6, 6, 0.5, 0.5, UV.glow, L[0], L[1], L[2], 0.12 * fl * smooth(3, 8, o.d), 1, 0, 0.35, 1.0);
+      push(c[0], c[1], c[2], 0, 2.2, 2.2, 0.5, 0.5, UV.glow, L[0], L[1], L[2], 0.5 * fl, 1, 0, 0.35, 1.0);
+      push(o.x, o.y, o.z, o.tilt, BULB_W, BULB_H, 0.5, 1, o.uv, 1, 1, 1, 1, 0, 0, 0.45, 1.6);
+      push(c[0], c[1], c[2], 0, 0.8, 0.8, 0.5, 0.5, UV.glow, 1, 0.92, 0.75, 0.5 * fl, 1, 0, 0.35, 1.0);
       break;
     }
     case 2: {
@@ -949,14 +1084,16 @@ function emit(o, t) {
     }
     case 6: {
       const r = o.rad * (1 + 0.06 * o.h + 0.03 * Math.sin(t * 2)), burst = o.act >= 0 ? o.act / 0.75 : 0;
-      push(o.x, o.y, o.z, 0, r * 9, r * 9, 0.5, 0.5, UV.glow, 1, 0.85, 0.55, 0.55 + o.h * 0.3, 1, 0, 0.15, 2);
-      push(o.x, o.y, o.z, t * 0.12, r * 7 * (1 + burst * 2), r * 7 * (1 + burst * 2), 0.5, 0.5, UV.rays, 1, 0.9, 0.7, 0.5 + o.h * 0.3 + burst * 0.5, 1, 0, 0.15, 2);
-      push(o.x, o.y, o.z, -t * 0.07, r * 4.5, r * 4.5, 0.5, 0.5, UV.rays, 1, 0.95, 0.85, 0.5, 1, 0, 0.15, 2);
+      const ig = lerp(0.3, 1, revealFx), rs = lerp(0.5, 1, revealFx);   // the star comes alive as you arrive
+      push(o.x, o.y, o.z, 0, r * 26, r * 26, 0.5, 0.5, UV.glow, 1, 0.8, 0.5, 0.22 * revealFx, 1, 0, 0.1, 2);
+      push(o.x, o.y, o.z, 0, r * 9 * lerp(0.7, 1.2, revealFx), r * 9 * lerp(0.7, 1.2, revealFx), 0.5, 0.5, UV.glow, 1, 0.85, 0.55, (0.55 + o.h * 0.3) * ig, 1, 0, 0.15, 2);
+      push(o.x, o.y, o.z, t * 0.12, r * 7 * rs * (1 + burst * 2), r * 7 * rs * (1 + burst * 2), 0.5, 0.5, UV.rays, 1, 0.9, 0.7, (0.5 + o.h * 0.3 + burst * 0.5) * ig, 1, 0, 0.15, 2);
+      push(o.x, o.y, o.z, -t * 0.07, r * 4.5 * rs, r * 4.5 * rs, 0.5, 0.5, UV.rays, 1, 0.95, 0.85, 0.5 * ig, 1, 0, 0.15, 2);
       push(o.x, o.y, o.z, Math.sin(t * 0.7) * 0.05, r * 2.2, r * 2.2, 0.5, 0.5, o.uv, 1.2, 1.15, 1.05, 1, 0, 0, 0.15, 2);
       hits.push({ o, x: o.sx, y: o.sy, r: r * 1.2 * o.s });
       break;
     }
-    case 7: push(o.x + Math.sin(t * 0.05 + o.x) * 1.5, o.y, o.z, o.rot, o.size * 1.6, o.size, 0.5, 0.5, o.uv, o.col[0], o.col[1], o.col[2], o.a, 0, 0, 0.45, 8); break;
+    case 7: push(o.x + Math.sin(t * 0.05 + o.x) * 1.5, o.y, o.z, o.rot, o.size * 1.6, o.size, 0.5, 0.5, o.uv, o.col[0], o.col[1], o.col[2], o.a, 0, 0, 0.45, -8); break;   // mist: no mip blur (it's already soft)
     case 8: {
       const a = o.a * (1 - smooth(15, 40, cam.y)) * (0.8 + 0.2 * Math.sin(t * 0.4 + o.ph));
       if (a > 0.002) push(o.x, o.y, o.z, 0.38, o.w, o.h, 0.5, 0, UV.shaft, 1, 0.82, 0.55, a, 1, 0, 0.25, 6);
@@ -1008,14 +1145,15 @@ function hitTest() {
 
 // ================================================================ FRAME
 const vis = [];
-let last = performance.now(), msAvg = 0;
+let last = performance.now(), msAvg = 0, revealFx = 0;
 function frame(now) {
   const t0 = performance.now();
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   const t = now / 1000;
 
   maybeSnap(now);
-  pNow += (pTarget - pNow) * (1 - Math.exp(-dt * 4.5));
+  pNow += (pTarget - pNow) * (1 - Math.exp(-dt * lerp(4.5, 1.3, smooth(0.8, 0.97, pNow))));
+  revealFx = smooth(0.9, 1.0, pNow);
   mxS += (mx - mxS) * (1 - Math.exp(-dt * 3));
   myS += (my - myS) * (1 - Math.exp(-dt * 3));
 
@@ -1057,8 +1195,9 @@ function frame(now) {
   gl.uniform1f(U.u_F, F); gl.uniform1f(U.u_hz, cam.hzPx);
   gl.uniform2f(U.u_vp, W, H);
   gl.uniform3fv(U.u_haze, at.haze); gl.uniform1f(U.u_k, at.k); gl.uniform1f(U.u_camY, cam.y);
+  const fb = focusBack(pNow); gl.uniform1f(U.u_focus, fb.focus); gl.uniform1f(U.u_back, fb.back);
   pointLights.slice(0, NPL).forEach((l, i) => {
-    const fl = 0.85 + 0.15 * Math.sin(t * 9 + i) * Math.sin(t * 4.3 + i * 2);
+    const fl = (0.85 + 0.15 * Math.sin(t * 9 + i) * Math.sin(t * 4.3 + i * 2)) * (l.reveal ? lerp(0.35, 1.3, revealFx) : 1);
     plCol.set([l.col[0] * fl, l.col[1] * fl, l.col[2] * fl], i * 3);
   });
   gl.uniform4fv(U.u_pl, plPos); gl.uniform3fv(U.u_plc, plCol);
@@ -1076,7 +1215,7 @@ function frame(now) {
     }
   }
   msAvg = msAvg * 0.95 + (performance.now() - t0) * 0.05;
-  window.__stats = { ms: msAvg, instances: N, p: pNow, y: cam.y, R: cam.R };
+  window.__stats = { ms: msAvg, instances: N, p: pNow, y: cam.y, R: cam.R, atlas: ATLAS };
   requestAnimationFrame(frame);
 }
 sPrev = scrollS(); pTarget = pNow = scrollToPath(sPrev);
