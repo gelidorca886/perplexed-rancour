@@ -26,6 +26,7 @@ const LINKS = {
   ornaments: ['ornament-1', 'ornament-2', 'ornament-3', 'ornament-4'],
   canes:     ['cane-1', 'cane-2'],
   creatures: ['creature-1', 'creature-2'],
+  jabu:      'jabu',          // the snowy stop above the creatures
   star:      'star',
 };
 
@@ -38,7 +39,7 @@ const KEYS = [
   [0.34, 22,    17,  0.58],   // STOP 2: ornament hollow
   [0.49, 37,    15,  0.57],
   [0.64, 50,    13.5,0.56],   // STOP 3: creature bough
-  [0.75, 64,    12,  0.56],   //   through the cloud layer
+  [0.75, 64,    12,  0.56],   //   into the cloud layer — STOP 4 (jabu) is at p 0.8 on this stretch
   [0.86, 80,    14,  0.62],   //   breaking out above the clouds
   [0.93, 87,    27,  0.60],   //   pulling back, star rises into frame
   [1.00, 92,    34,  0.52],   // STOP 4: snowy tip, star, sky
@@ -51,14 +52,15 @@ const NEAR   = 0.6;
 // holds the camera still for HOLD of the scroll on either side, and the
 // travel between stops eases in and out. When scrolling stops between two
 // stops, it settles into one (toward the direction you were going).
-const STOPS       = [0, 0.34, 0.64, 1];   // path p of each stop (must match KEYS rows)
-const STOP_SCROLL = [0, 0.24, 0.48, 1];   // where each stop sits on the scrollbar — the reveal gets the last half
-const STOP_FOCUS  = [12, 11, 10, 34];     // distance of the subject at each stop
-const BACK_AT_STOP = [0.5, 0.8, 0.8, 0];  // how much haze + blur goes on everything well behind the subject, at each stop
-const SNAP_TIMES  = [1100, 1300, 6500];   // ms to settle across each stretch (the last one is the reveal)
+//                   floor  ornaments  creatures  jabu   star
+const STOPS       = [0,     0.34,      0.64,      0.8,   1];      // path p of each stop
+const STOP_SCROLL = [0,     0.2,       0.4,       0.58,  1];      // where each stop sits on the scrollbar — the reveal gets the most
+const STOP_FOCUS  = [12,    11,        10,        10,    34];     // distance of the subject at each stop
+const BACK_AT_STOP = [0.5,  0.8,       0.8,       0.75,  0];      // haze + blur on everything well behind the subject, at each stop
+const SNAP_TIMES  = [1100, 1300, 1500, 6000];   // ms to settle across each stretch (the last one is the reveal)
 // pacing inside a stretch: [scroll fraction, path fraction] points. The reveal rushes
 // through the clouds and spends most of its time on the pull-back to the star.
-const SEG_SHAPE   = [null, null, [[0, 0], [0.2, 0.306], [0.34, 0.611], [1, 1]]];
+const SEG_SHAPE   = [null, null, null, [[0, 0], [0.2, 0.3], [1, 1]]];   // out of the branches quickly, then the long pull-back
 const HOLD      = 0.055;                 // fraction of total scroll each stop holds for (each side)
 const SNAP      = !/nosnap/.test(location.search);  // settle into a stop when scrolling stops (?nosnap to disable)
 const SNAP_WAIT = 180;                   // ms of no scrolling before settling
@@ -174,6 +176,7 @@ function toView(pose, x, y, z) {
 // ================================================================ TREE SHAPE
 const TREE_H = 100, BASE_R = 33;
 const coneR  = y => BASE_R * Math.pow(clamp(1 - y / TREE_H, 0, 1), 0.65);
+const TRUNK_DRAW = 1.7;   // the trunk is DRAWN this much wider than the size branches grow from (so they don't move)
 const trunkR = y => 2.2 * Math.pow(clamp(1 - y / (TREE_H + 2), 0, 1), 1.4) + 0.06;
 
 // ================================================================ SPRITES
@@ -438,7 +441,19 @@ GIFT_COLS.forEach((c, i) => { def(`deco/gift-${i}-box`, 128, 128, drawBox(c), 'b
 LINKS.gifts.forEach((page, i) => { def(`link/${page}-box`, 128, 128, drawBox(GIFT_COLS[i]), 'clickable gift body'); def(`link/${page}-lid`, 128, 64, drawLid(GIFT_COLS[i]), 'clickable gift lid + bow; flies off on click'); });
 
 // --- creatures
-const EYES = [[0.37, 0.4], [0.53, 0.4]];   // eye centres in the creature sprite (fractions)
+const EYES = [[0.37, 0.4], [0.53, 0.4]];
+const JABU_EYES = [[0.36, 0.34], [0.64, 0.34]];
+def('link/jabu', 192, 160, (g, w, h) => {      // placeholder: a big round front-facing fish. Replace with your drawing.
+  const body = '#9fb4d8', belly = '#e7ecf6', fin = '#7f96c4';
+  g.fillStyle = fin;                                                     // tail fin rising behind
+  g.beginPath(); g.moveTo(w * 0.5, h * 0.3); g.lineTo(w * 0.36, h * 0.02); g.quadraticCurveTo(w * 0.5, h * 0.12, w * 0.64, h * 0.02); g.closePath(); g.fill();
+  for (const sd of [-1, 1]) { g.beginPath(); g.ellipse(w * (0.5 + sd * 0.43), h * 0.62, w * 0.09, h * 0.16, sd * 0.6, 0, TAU); g.fill(); }   // side fins
+  g.fillStyle = body; g.beginPath(); g.ellipse(w * 0.5, h * 0.58, w * 0.4, h * 0.4, 0, 0, TAU); g.fill();
+  g.fillStyle = belly; g.beginPath(); g.ellipse(w * 0.5, h * 0.72, w * 0.27, h * 0.24, 0, 0, TAU); g.fill();
+  g.strokeStyle = '#4a5878'; g.lineWidth = 5; g.lineCap = 'round';          // wide mouth
+  g.beginPath(); g.moveTo(w * 0.32, h * 0.56); g.quadraticCurveTo(w * 0.5, h * 0.66, w * 0.68, h * 0.56); g.stroke();
+  g.fillStyle = 'rgba(255,255,255,.35)'; g.beginPath(); g.ellipse(w * 0.36, h * 0.38, w * 0.08, h * 0.05, -0.5, 0, TAU); g.fill();
+}, 'Jabu (snowy stop): placeholder fish, front-facing, NO eyes (added at 36%/64% across, 34% down, follow the cursor); sits on its bottom edge');   // eye centres in the creature sprite (fractions)
 const drawCritter = fur => (g, w, h) => {
   g.fillStyle = fur; g.strokeStyle = fur; g.lineCap = 'round'; g.lineWidth = w * 0.06;
   g.beginPath(); g.moveTo(w * 0.78, h * 0.8); g.quadraticCurveTo(w * 1.0, h * 0.75, w * 0.92, h * 0.5); g.stroke();
@@ -537,6 +552,13 @@ function addBlob(x, y, z, size, inner, keep = false) {
     const k = (101.5 - yy) / 9.5;
     for (let j = 0; j < 4; j++) { const a = rand(0, TAU), r = rand(0, 1.6) * k; addBlob(Math.cos(a) * r, yy, Math.sin(a) * r, lerp(1.1, 2.3, k) * rand(0.9, 1.2), 1); }
   }
+}
+
+// ---- a bare core round the trunk (real firs are bare inside), so the trunk shows through.
+// Filtered after the fact, so every other cluster keeps its exact position.
+for (let i = blobs.length - 1; i >= 0; i--) {
+  const o = blobs[i];
+  if (o.y < 90 && Math.hypot(o.x, o.z) < 0.22 * coneR(o.y) + 1.5) blobs.splice(i, 1);
 }
 
 // ---- LIGHTS. Their own random source, so changing them never moves a branch.
@@ -713,6 +735,24 @@ const SNOW = Array.from({ length: 1100 }, () => ({ kind: 10, snow: 1, u: R(), v:
     o.x = seat[0]; o.y = seat[1] + 0.12; o.z = seat[2];
   });
 }
+// STOP 4 — Jabu, on a snow-laden bough up in the cloud layer. Built last so nothing else moves.
+{
+  const P = POSE[3];
+  clearHollow(P, 14, 0.8, 0.55);
+  clearHollow(P, 6.5, 1.25, 0.85);
+  for (let j = puffs.length - 1; j >= 0; j--) {          // keep the cloud out of the shot
+    const q = toView(P, puffs[j].x, puffs[j].y, puffs[j].z);
+    if (q.d > -3 && q.d < 18 && Math.abs(q.u) < 1.3 && Math.abs(q.v) < 1) puffs.splice(j, 1);
+  }
+  const n0 = blobs.length;
+  bough(P, -0.75, 0.75, -0.22, 9.5, 3);                   // the bough he rests on
+  bough(P, -0.6, -0.15, 0.42, 11, 2.8);                   // snowy boughs framing the top
+  bough(P, 0.2, 0.7, 0.46, 12, 2.8);
+  for (let i = n0; i < blobs.length; i++) blobs[i].snow = 1;   // fully snowed on
+  const p = inView(P, 0.02, -0.22, 9.2);
+  things.push({ kind: 4, x: p[0], y: p[1] + 0.15, z: p[2], rad: 2.3, spr: 'link/jabu', page: LINKS.jabu, eyes: JABU_EYES, breathe: true, keep: true, ...anim() });
+  drape(P, -0.8, 0.3, -0.25, 0.24, 10.5, 3, 0.06);
+}
 const world = [...blobs, ...lights, ...things, ...puffs, ...shafts, ...segs];
 const interactive = things.filter(o => o.page);
 
@@ -748,107 +788,6 @@ let ATLAS = 2048, layout = packInto(ATLAS);
 if (!layout) { ATLAS = 4096; layout = packInto(ATLAS); }
 const atlas = mk(ATLAS, ATLAS), ag = atlas.getContext('2d');
 const SPR = {};
-// ---------------------------------------------------------------- ART STYLE experiments
-// ?style=penguin | paper | gouache | lino  — restyles every sprite as it's drawn into the
-// atlas (not the soft fx/* glows, mist, flakes), plus matching shading in the shader.
-const STYLE = new URLSearchParams(location.search).get('style') || '';
-const STYLE_FX = ({ penguin: { cel: 3, fog: 0.6, dof: 0.35 }, paper: { cel: 4, fog: 0.85, dof: 0.5 },
-  gouache: { cel: 0, fog: 1.1, dof: 1.2 }, lino: { cel: 2, fog: 0.75, dof: 0.3 } })[STYLE] || { cel: 0, fog: 1, dof: 1 };
-function rgb2hsl(r, g, b) {
-  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
-  if (mx === mn) return [0, 0, l];
-  const d = mx - mn, s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
-  const h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
-  return [h / 6, s, l];
-}
-function hsl2rgb(h, s, l) {
-  if (!s) return [l, l, l];
-  const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
-  const f = t => { t = (t + 1) % 1; return t < 1 / 6 ? p + (q - p) * 6 * t : t < 0.5 ? q : t < 2 / 3 ? p + (q - p) * (2 / 3 - t) * 6 : p; };
-  return [f(h + 1 / 3), f(h), f(h - 1 / 3)];
-}
-function stylize(g, x0, y0, w, h, name) {
-  if (!STYLE || name.startsWith('fx/')) return;
-  const N = w * h, img = g.getImageData(x0, y0, w, h), d = img.data, r = rng(name.length * 977 + w * 7 + h);
-  const idx = (x, y) => y * w + x;
-  const blur = (src, R) => {   // separable box blur on a Float32 array
-    const t = new Float32Array(N), o = new Float32Array(N);
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let a = 0, n = 0; for (let k = -R; k <= R; k++) { const xx = x + k; if (xx >= 0 && xx < w) { a += src[idx(xx, y)]; n++; } } t[idx(x, y)] = a / n; }
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let a = 0, n = 0; for (let k = -R; k <= R; k++) { const yy = y + k; if (yy >= 0 && yy < h) { a += t[idx(x, yy)]; n++; } } o[idx(x, y)] = a / n; }
-    return o;
-  };
-  const dilate = (mask, R) => {
-    const o = new Uint8Array(N);
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (mask[idx(x, y)])
-      for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) if (dx * dx + dy * dy <= R * R) { const xx = x + dx, yy = y + dy; if (xx >= 0 && yy >= 0 && xx < w && yy < h) o[idx(xx, yy)] = 1; }
-    return o;
-  };
-  let A = new Float32Array(N), Rc = new Float32Array(N), Gc = new Float32Array(N), Bc = new Float32Array(N);
-  for (let i = 0; i < N; i++) { A[i] = d[i * 4 + 3] / 255; const k = A[i] > 0 ? 1 / 255 : 0; Rc[i] = d[i * 4] * k; Gc[i] = d[i * 4 + 1] * k; Bc[i] = d[i * 4 + 2] * k; }
-  const foliage = name.startsWith('tree/needles');
-  if (foliage && STYLE !== 'gouache') {            // close the gaps between needles into chunky shapes
-    const wR = blur(Rc.map((v, i) => v * A[i]), 2), wG = blur(Gc.map((v, i) => v * A[i]), 2), wB = blur(Bc.map((v, i) => v * A[i]), 2);
-    A = blur(A, 2);
-    for (let i = 0; i < N; i++) if (A[i] > 0.001) { Rc[i] = wR[i] / A[i]; Gc[i] = wG[i] / A[i]; Bc[i] = wB[i] / A[i]; }
-    for (let i = 0; i < N; i++) A[i] = Math.min(1, A[i] * 1.8);
-  }
-  const out = new ImageData(w, h), o = out.data;
-  const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-  const soft = (thr) => A.map(a => sstep(thr - 0.07, thr + 0.07, a));            // anti-aliased fill mask
-  const ringOf = (M, R) => blur(M, R).map(v => sstep(0.03, 0.22, v));           // anti-aliased outline grown out of it
-  const mixc = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
-  const put = (i, c, a) => { o[i * 4] = c[0] * 255; o[i * 4 + 1] = c[1] * 255; o[i * 4 + 2] = c[2] * 255; o[i * 4 + 3] = a * 255; };
-  const S = Math.min(w, h);
-  if (STYLE === 'penguin') {          // flat cel colours, chunky dark outline
-    const M = soft(0.4), ring = ringOf(M, Math.max(2, Math.round(S / 40))), OUT = [0.1, 0.07, 0.16];
-    for (let i = 0; i < N; i++) {
-      const a = Math.max(M[i], ring[i]); if (a < 0.003) continue;
-      let [hh, ss, ll] = rgb2hsl(Rc[i], Gc[i], Bc[i]);
-      ss = Math.min(1, ss * 1.3 + 0.05); ll = ll < 0.26 ? 0.24 : ll < 0.48 ? 0.42 : ll < 0.8 ? 0.62 : 0.93;
-      put(i, mixc(OUT, hsl2rgb(hh, ss, ll), M[i] / a), a);
-    }
-  } else if (STYLE === 'paper') {     // two-tone construction paper, scissor edges, grain, drop shadow
-    if (foliage) { A = blur(A, 2); for (let i = 0; i < N; i++) A[i] = Math.min(1, A[i] * 1.6); }
-    const M = soft(0.5 + (r() - 0.5) * 0.1);
-    const sx = Math.max(3, Math.round(S / 26)), sy = Math.max(3, Math.round(S / 20));
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const i = idx(x, y), sh = x >= sx && y >= sy ? M[idx(x - sx, y - sy)] * 0.5 : 0;
-      let [hh, ss, ll] = rgb2hsl(Rc[i], Gc[i], Bc[i]);
-      ll = ll < 0.5 ? 0.34 : 0.62; if (rgb2hsl(Rc[i], Gc[i], Bc[i])[2] > 0.85) ll = 0.9; ss *= 0.85;
-      const gr = 0.92 + 0.08 * r(), c = hsl2rgb(hh, ss, ll), a = M[i] + sh * (1 - M[i]);
-      if (a < 0.003) continue;
-      put(i, mixc([0, 0, 0], [c[0] * gr, c[1] * gr, c[2] * gr], M[i] / a), a);
-    }
-  } else if (STYLE === 'gouache') {   // soft, warm, brushy, dry edges
-    A = blur(A, 2); Rc = blur(Rc, 2); Gc = blur(Gc, 2); Bc = blur(Bc, 2);
-    const G = 7, cells = Math.ceil(w / G) + 2, rows = Math.ceil(h / G) + 2, nz = Array.from({ length: cells * rows }, () => r());
-    const noise = (x, y) => { const fx = x / G, fy = y / G, ix = fx | 0, iy = fy | 0, tx = fx - ix, ty = fy - iy, n = (a, b) => nz[b * cells + a];
-      return lerp(lerp(n(ix, iy), n(ix + 1, iy), tx), lerp(n(ix, iy + 1), n(ix + 1, iy + 1), tx), ty); };
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const i = idx(x, y); if (A[i] < 0.01) continue;
-      let [hh, ss, ll] = rgb2hsl(Rc[i], Gc[i], Bc[i]);
-      const n1 = noise(x, y), n2 = noise(x * 2.7 + 13, y * 0.6);          // blotches + horizontal brush drag
-      hh += (n1 - 0.5) * 0.05; ss = ss * 0.7 * (0.8 + 0.4 * n2); ll = ll * 0.85 + 0.1 + (n2 - 0.5) * 0.12;
-      const m = 0.75 + 0.45 * n1 + (r() - 0.5) * 0.08;
-      const c = hsl2rgb((hh + 1) % 1, Math.min(1, ss), Math.min(0.95, ll));
-      const a = A[i] < 0.9 ? Math.min(1, A[i] * (0.4 + 1.2 * n2) * (0.7 + 0.6 * r())) : A[i];
-      put(i, [Math.min(1, c[0] * m + 0.03), c[1] * m, Math.max(0, c[2] * m - 0.03)], Math.min(1, a));
-    }
-  } else if (STYLE === 'lino') {      // three inks: dark, a hatched mid colour, pale paper
-    const M = soft(0.45), ring = ringOf(M, Math.max(1, Math.round(S / 70))), INK = [0.11, 0.09, 0.07];
-    const per = Math.max(7, Math.round(S / 14));
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const i = idx(x, y), a = Math.max(M[i], ring[i]); if (a < 0.003) continue;
-      const [hh, ss, ll] = rgb2hsl(Rc[i], Gc[i], Bc[i]);
-      let c;
-      if (ll < 0.28) c = INK;
-      else if (ll < 0.62) c = (x + y) % per < per * 0.3 ? INK : hsl2rgb(hh, Math.min(0.6, ss), 0.42);
-      else c = r() < 0.03 ? INK : hsl2rgb(hh, Math.min(0.35, ss), 0.8);
-      put(i, mixc(INK, c, M[i] / a), a);
-    }
-  }
-  g.putImageData(out, x0, y0);
-}
 for (const [s, x, y, w, h] of layout) {
   ag.save(); ag.translate(x, y); ag.beginPath(); ag.rect(0, 0, w, h); ag.clip();
   const im = artImgs[s.name];
@@ -858,7 +797,6 @@ for (const [s, x, y, w, h] of layout) {
     ag.drawImage(im, (w - dw) / 2, (h - dh) / 2, dw, dh);
   } else s.draw(ag, w, h);
   ag.restore();
-  stylize(ag, x, y, w, h, s.name);
   SPR[s.name] = [x / ATLAS, y / ATLAS, (x + w) / ATLAS, (y + h) / ATLAS];
 }
 window.__sprites = SPEC.map(s => ({ name: s.name, w: s.w, h: s.h, notes: s.notes, art: !!artImgs[s.name] }));
@@ -909,13 +847,13 @@ void main(){
   v_tint = a_tint; v_p = a_p.xyz; v_d = d; v_dof = (a_p.w > 0.0 && a_p.x < 0.5) ? 1.0 : 0.0;   // glows never get mip-blurred
   v_wp = vec3(a_pos.x, a_pos.y + (a_off.y - c.y) * a_size.y, a_pos.z);
   float fade = smoothstep(${NEAR.toFixed(2)}, abs(a_p.w), d);
-  float scr = abs(a_size.y) * s / u_vp.y;
+  float scr = min(abs(a_size.x), abs(a_size.y)) * s / u_vp.y;   // smaller side, so the tall trunk never counts as 'filling the screen'
   fade *= a_p.w < -4.0 ? 1.0 - smoothstep(0.35, 0.9, scr) : 1.0 - smoothstep(1.4, 3.2, scr);   // mist never becomes a veil over the screen
   v_fade = fade;
 }`;
 const FS = `#version 300 es
 precision highp float;
-uniform sampler2D u_tex; uniform vec3 u_haze; uniform float u_k, u_camY, u_focus, u_back, u_cel, u_dofk;
+uniform sampler2D u_tex; uniform vec3 u_haze; uniform float u_k, u_camY, u_focus, u_back;
 uniform vec3 u_lw, u_lm, u_lc;
 uniform vec4 u_pl[${NPL}]; uniform vec3 u_plc[${NPL}];
 in vec2 v_uv; in vec4 v_tint; in vec3 v_p; in float v_d; in vec3 v_wp; in float v_fade; in float v_dof;
@@ -923,7 +861,7 @@ out vec4 o;
 void main(){
   float d = v_d;
   float bias = ((1.0 - smoothstep(0.8, 6.0, d)) * 3.2 + smoothstep(30.0, 90.0, d) * 1.2
-              + smoothstep(u_focus + 3.0, u_focus + 18.0, d) * 2.4 * u_back) * v_dof * u_dofk;
+              + smoothstep(u_focus + 3.0, u_focus + 18.0, d) * 2.4 * u_back) * v_dof;
   vec4 t = texture(u_tex, v_uv, bias);
   vec3 base = t.rgb * v_tint.rgb;
   vec3 col = base;
@@ -934,7 +872,6 @@ void main(){
     float under = smoothstep(0.0, 1.1, elev);
     float near = 1.0 - smoothstep(1.0, 8.0, d);
     float L = mix(1.0, 0.3, under) * mix(1.0, 0.2, near);
-    if (u_cel > 0.0) L = min(1.0, (floor(L * u_cel) + 1.0) / u_cel);   // stepped (cel) shading
     vec3 pl = vec3(0.0);
     for (int i = 0; i < ${NPL}; i++) {
       vec3 dv = v_wp - u_pl[i].xyz;
@@ -964,7 +901,7 @@ gl.linkProgram(prog);
 if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
 gl.useProgram(prog);
 const U = {};
-for (const n of ['u_cam', 'u_sc', 'u_F', 'u_hz', 'u_vp', 'u_tex', 'u_haze', 'u_k', 'u_camY', 'u_lw', 'u_lm', 'u_lc', 'u_pl', 'u_plc', 'u_focus', 'u_back', 'u_cel', 'u_dofk']) U[n] = gl.getUniformLocation(prog, n);
+for (const n of ['u_cam', 'u_sc', 'u_F', 'u_hz', 'u_vp', 'u_tex', 'u_haze', 'u_k', 'u_camY', 'u_lw', 'u_lm', 'u_lc', 'u_pl', 'u_plc', 'u_focus', 'u_back']) U[n] = gl.getUniformLocation(prog, n);
 
 const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
 const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
@@ -1132,7 +1069,7 @@ function drawSky(t, dt, at) {
       sky.globalAlpha = sa * a * a;
       sky.fillRect(x - 0.5, skyY + s.v * ph, 2, 2);
     }
-    const mxp = W * 0.8 + (POSE[3].phi - cam.phi) * kx, myp = H * 0.18 - (cam.y - 90) * 3;
+    const mxp = W * 0.8 + (POSE[POSE.length - 1].phi - cam.phi) * kx, myp = H * 0.18 - (cam.y - 90) * 3;
     sky.globalAlpha = sa;
     const mg = sky.createRadialGradient(mxp, myp, 0, mxp, myp, H * 0.45);
     mg.addColorStop(0, 'rgba(200,215,255,.35)'); mg.addColorStop(0.08, 'rgba(170,190,255,.12)'); mg.addColorStop(1, 'rgba(150,170,255,0)');
@@ -1237,10 +1174,10 @@ function emit(o, t) {
       const r = o.rad, act = o.act;
       const hop = act >= 0 ? Math.sin(Math.min(1, act / 0.6) * Math.PI) * r * 1.4 : 0;
       const lift = hop + o.h * r * 0.2 + Math.sin(t * 2 + o.sw) * r * 0.03;
-      const w = r * 2.4, sq = 1 + o.h * 0.06, y = o.y + lift;
+      const w = r * 2.4, sq = 1 + o.h * 0.06 + (o.breathe ? Math.sin(t * 1.4) * 0.02 : 0), y = o.y + lift;
       push(o.x, y, o.z, 0, w / sq, w * sq, 0.5, 1, o.uv, 1, 1, 1, 1, 0, 0.6, 1, 2.2);
       const blink = Math.sin(t * 0.9 + o.sw * 3) > 0.985 ? 0.15 : 1;
-      for (const [fx, fy] of EYES) {
+      for (const [fx, fy] of (o.eyes || EYES)) {
         const dx = (fx - 0.5) * w / sq, dy = (fy - 1) * w * sq;
         const e = [o.x + cam.cos * dx, y - dy, o.z - cam.sin * dx], er = r * 0.26;
         push(e[0], e[1], e[2], 0, er, er * blink, 0.5, 0.5, UV.disc, 1, 1, 1, 1, 0, 0.5, 1, 2.2);
@@ -1285,7 +1222,7 @@ function emit(o, t) {
       if (a > 0.002) push(o.x, o.y, o.z, 0.38, o.w, o.h, 0.5, 0, UV.shaft, 1, 0.82, 0.55, a, 1, 0, 0.25, 6);
       break;
     }
-    case 9: push(0, 0, 0, 0, trunkR(0) * 2, 101.5, 0.5, 1, UV.trunk, 1, 1, 1, 1, 0, 1, 1, 2.2); break;
+    case 9: push(0, 0, 0, 0, trunkR(0) * 2 * TRUNK_DRAW, 101.5, 0.5, 1, UV.trunk, 1.15, 1.1, 1.05, 1, 0, 1, 0.35, 2.2); break;   // little haze: always reads through the tree
     case 10: {
       const bk = 1 + Math.max(0, 3.5 - o.d) * 1.3, sz = o.sz * bk, a = Math.min(1, o.a / (bk * bk) * (bk > 1 ? 1.6 : 1));
       if (o.snow) push(o.x, o.y, o.z, 0, sz * 1.7, sz * 1.7, 0.5, 0.5, bk > 1.4 ? UV.glow : UV.flake, 0.88, 0.92, 1, a, 0, 0, 0.55, -1.0);
@@ -1360,8 +1297,7 @@ function frame(now) {
   cam.x = cam.R * cam.sin; cam.z = cam.R * cam.cos;
   cam.hzPx = c.hz * H;
   const at = atmosAt(cam.y);
-  at.k *= lerp(FOG_AT_STOP, FOG_BETWEEN, betweenness(pNow)) * STYLE_FX.fog;
-  gl.uniform1f(U.u_cel, STYLE_FX.cel); gl.uniform1f(U.u_dofk, STYLE_FX.dof);
+  at.k *= lerp(FOG_AT_STOP, FOG_BETWEEN, betweenness(pNow));
 
   drawSky(t, dt, at);
 

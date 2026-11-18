@@ -113,6 +113,7 @@ placeholder drawn in code is used.
 | `link/gift-3-lid` | 128×64 | clickable gift lid + bow; flies off on click |
 | `link/gift-4-box` | 128×128 | clickable gift body |
 | `link/gift-4-lid` | 128×64 | clickable gift lid + bow; flies off on click |
+| `link/jabu` | 192×160 | Jabu (snowy stop): placeholder fish, front-facing, NO eyes (added at 36%/64% across, 34% down, follow the cursor); sits on its bottom edge |
 | `link/creature-1` | 128×128 | clickable creature, NO eyes (eyes are added and follow the cursor at 37%/53% across, 40% down); sits on its bottom edge |
 | `link/creature-2` | 128×128 | clickable creature, NO eyes (eyes are added and follow the cursor at 37%/53% across, 40% down); sits on its bottom edge |
 | `link/star` | 128×128 | the star on top, centred |
