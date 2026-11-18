@@ -37,14 +37,16 @@ placeholder drawn in code is used.
 
 | name | base slot (px) | notes |
 |---|---|---|
-| `tree/needles-0` | 128×128 | needle cluster, mid-green, lit/shaded by the shader |
-| `tree/needles-1` | 128×128 | needle cluster, mid-green, lit/shaded by the shader |
-| `tree/needles-2` | 128×128 | needle cluster, mid-green, lit/shaded by the shader |
-| `tree/needles-3` | 128×128 | needle cluster, mid-green, lit/shaded by the shader |
-| `tree/snowcap-0` | 128×128 | snow lying on top of tree/needles-N; drawn over it, same frame |
-| `tree/snowcap-1` | 128×128 | snow lying on top of tree/needles-N; drawn over it, same frame |
-| `tree/snowcap-2` | 128×128 | snow lying on top of tree/needles-N; drawn over it, same frame |
-| `tree/snowcap-3` | 128×128 | snow lying on top of tree/needles-N; drawn over it, same frame |
+| `tree/needles-0` | 128×128 | needle cluster: a loose tuft of small branchlets, open in the middle; mid-green, shaded by the shader |
+| `tree/needles-1` | 128×128 | needle cluster: a loose tuft of small branchlets, open in the middle; mid-green, shaded by the shader |
+| `tree/needles-2` | 128×128 | needle cluster: a loose tuft of small branchlets, open in the middle; mid-green, shaded by the shader |
+| `tree/needles-3` | 128×128 | needle cluster: a loose tuft of small branchlets, open in the middle; mid-green, shaded by the shader |
+| `tree/snowcap-0` | 128×128 | snow lying on tree/needles-N (same number, same frame); drawn over it |
+| `tree/snowcap-1` | 128×128 | snow lying on tree/needles-N (same number, same frame); drawn over it |
+| `tree/snowcap-2` | 128×128 | snow lying on tree/needles-N (same number, same frame); drawn over it |
+| `tree/snowcap-3` | 128×128 | snow lying on tree/needles-N (same number, same frame); drawn over it |
+| `tree/wood` | 128×24 | bark, stretched along each branch (left→right = along the branch) |
+| `fx/wire` | 64×8 | light-string wire, white (tinted dark green) |
 | `tree/trunk` | 64×1024 | whole trunk, base at bottom, tip at top; tapers to a point |
 | `fx/glow` | 64×64 | soft light halo, white |
 | `fx/flake` | 64×64 | snowflake, white |
