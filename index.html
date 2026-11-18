@@ -6,7 +6,11 @@
 <title>tree</title>
 <style>
   html, body { margin: 0; background: #000; }
-  #scene { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse 75% 70% at 50% 50%, transparent 55%, rgba(0,0,0,.55) 100%);
+  }
   #track { height: 1400vh; }              /* scroll length = how long the climb takes */
   #page {
     position: fixed; inset: 0; display: none;
@@ -18,7 +22,9 @@
 </style>
 </head>
 <body>
+<canvas id="sky"></canvas>
 <canvas id="scene"></canvas>
+<div id="vignette"></div>
 <div id="track"></div>
 <div id="page"><div><span id="page-id"></span><br><br>(placeholder page — click to close)</div></div>
 <script src="tree.js"></script>

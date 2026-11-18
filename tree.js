@@ -1,15 +1,21 @@
 // =====================================================================
-//  THE TREE — blockout
+//  THE TREE
 //  A fake-3D camera climbs a giant tree. Scroll down = camera goes up.
-//  Everything is a flat sprite placed in 3D, projected, sorted far→near.
+//
+//  Everything in the tree is a flat sprite placed in 3D. Each frame the
+//  sprites are sorted far→near and drawn in ONE WebGL call. Lighting, haze
+//  and depth-of-field are computed per pixel in the shader from distance
+//  and height, so nothing steps or pops.
+//
+//  Behind the WebGL canvas, a 2D canvas paints the sky / room / floor.
 //
 //  World units: tree is 100 tall, ~33 radius at the base. y is up.
-//  Tree axis is x=0,z=0.
+//  Tree axis is x=0, z=0.
 // =====================================================================
 (() => {
 'use strict';
 
-// ---------------------------------------------------------------- links
+// ================================================================ CONFIG
 // Every clickable thing. Rename / repoint freely.
 const LINKS = {
   gifts:     ['gift-1', 'gift-2', 'gift-3', 'gift-4'],
@@ -19,24 +25,41 @@ const LINKS = {
   star:      'star',
 };
 
-// ---------------------------------------------------------------- camera path
-// p = scroll progress 0..1.  y = altitude, R = distance from trunk,
-// hz = where eye-level sits on screen (0 top, 1 bottom). Low hz = looking up.
+// Camera path. p = scroll progress 0..1, y = altitude, R = distance from
+// trunk, hz = where eye level sits on screen (0 top, 1 bottom).
 const KEYS = [
   // p     y     R     hz
   [0.00,  1.4,  21,  0.80],   // on the floor among the gifts
   [0.08,  2.6,  20.5,0.78],   // linger
   [0.30, 22,    17,  0.64],   // lower branches, ornaments
   [0.55, 46,    13.5,0.58],   // second level, candy + creatures
-  [0.75, 68,    10.5,0.56],   // thinning, snow starting
-  [0.87, 82,    13,  0.56],   // breaking out of the branches
-  [1.00, 88,    32,  0.56],   // pulled back: snowy tip, star, night sky
+  [0.72, 64,    12,  0.56],   // into the cloud layer
+  [0.86, 80,    14,  0.62],   // breaking out above the clouds
+  [0.93, 87,    27,  0.60],   // pulling back, star rises into frame
+  [1.00, 92,    34,  0.52],   // snowy tip, star, sky
 ];
 const PHI0   = 0;              // starting angle around the trunk
-const SPIRAL = Math.PI * 0.8;  // how far the camera circles the trunk over the whole climb
-const NEAR   = 0.7;
+const SPIRAL = Math.PI * 0.8;  // how far the camera circles the trunk over the climb
+const NEAR   = 0.6;
 
-// ---------------------------------------------------------------- utils
+// Atmosphere by altitude.  haze = colour distant things dissolve into.
+// k = haze density.  sky = top/bottom of the backdrop.  light = what the
+// needles are lit by at that height.
+const ATMOS = [
+  // y    haze       k      sky top    sky bottom
+  [0,   '#6a3a22', 0.050, '#130805', '#2e150b'],  // room: firelit, dusty amber
+  [22,  '#5a3044', 0.055, '#110713', '#2a1222'],  // rosy
+  [45,  '#3a3570', 0.055, '#0a0a24', '#1e1c48'],  // violet dusk, room dissolving
+  [64,  '#6878a8', 0.060, '#070b26', '#232d5c'],  // inside the cloud layer
+  [78,  '#1d2a58', 0.016, '#02040f', '#0c1638'],  // above the clouds
+  [120, '#101a40', 0.006, '#010208', '#081030'],  // night sky
+].map(([y, h, k, a, b]) => ({ y, haze: hex(h), k, top: hex(a), bot: hex(b) }));
+const LIGHT_WARM = [1.15, 0.86, 0.62];
+const LIGHT_MID  = [0.85, 0.80, 1.05];
+const LIGHT_COOL = [0.80, 0.95, 1.25];
+
+// ================================================================ UTILS
+function hex(h) { return [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255); }
 function rng(seed) {
   return () => {
     seed = (seed + 0x6D2B79F5) | 0;
@@ -51,8 +74,8 @@ const lerp   = (a, b, t) => a + (b - a) * t;
 const clamp  = (x, a, b) => Math.max(a, Math.min(b, x));
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const TAU = Math.PI * 2;
-const hex = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
-const mix = (a, b, t) => `rgb(${a.map((v, i) => Math.round(lerp(v, b[i], t))).join(',')})`;
+const mix3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+const css = c => `rgb(${c.map(v => Math.round(clamp(v, 0, 1) * 255)).join(',')})`;
 
 function catmull(p0, p1, p2, p3, t) {
   const t2 = t * t, t3 = t2 * t;
@@ -71,242 +94,465 @@ function camAt(p) {
     phi: PHI0 + SPIRAL * p,
   };
 }
-// altitude → camera state at that altitude (for placing things where the camera will see them)
-function camAtAltitude(y) {
-  let lo = 0, hi = 1;
-  for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (camAt(m).y < y) lo = m; else hi = m; }
-  return camAt(lo);
+// camera state when it passes a given altitude (table for speed)
+const CAM_BY_Y = [];
+{
+  for (let i = 0; i <= 400; i++) {
+    const y = i * 0.25; let lo = 0, hi = 1;
+    for (let j = 0; j < 30; j++) { const m = (lo + hi) / 2; if (camAt(m).y < y) lo = m; else hi = m; }
+    CAM_BY_Y.push(camAt(lo));
+  }
 }
-// branch-angle that faces the camera when the camera is at angle phi
-const facing = phi => Math.PI / 2 - phi;
+const camAtAltitude = y => CAM_BY_Y[clamp(Math.round(y * 4), 0, 400)];
+const facing = phi => Math.PI / 2 - phi;   // branch angle that points at a camera at angle phi
 
-// ---------------------------------------------------------------- canvas
-const cvs = document.getElementById('scene');
-const ctx = cvs.getContext('2d');
-let W = 0, H = 0, DPR = 1, F = 1;
-function resize() {
-  DPR = Math.min(window.devicePixelRatio || 1, 1.75);
-  W = innerWidth; H = innerHeight;
-  cvs.width = Math.round(W * DPR); cvs.height = Math.round(H * DPR);
-  F = Math.min(H, W * 1.3) * 0.95;
+function atmosAt(y) {
+  let i = 0; while (i < ATMOS.length - 2 && y > ATMOS[i + 1].y) i++;
+  const a = ATMOS[i], b = ATMOS[i + 1], t = smooth(a.y, b.y, y);
+  return { haze: mix3(a.haze, b.haze, t), k: lerp(a.k, b.k, t), top: mix3(a.top, b.top, t), bot: mix3(a.bot, b.bot, t) };
 }
-addEventListener('resize', resize); resize();
-const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
 
-// ---------------------------------------------------------------- tree shape
+// ================================================================ TREE SHAPE
 const TREE_H = 100, BASE_R = 33;
 const coneR  = y => BASE_R * Math.pow(clamp(1 - y / TREE_H, 0, 1), 0.65);
 const trunkR = y => 2.2 * Math.pow(clamp(1 - y / (TREE_H + 2), 0, 1), 1.4) + 0.06;
 
-// ---------------------------------------------------------------- sprites
-const SS = 160; // needle sprite size
-const PAL = [
-  ['#040a06', '#07110a', '#0a170e', '#0d1d12'],            // 0: silhouette (right in front of camera)
-  ['#08160d', '#0c2214', '#112c1a', '#163621'],            // 1: inner (near trunk, shaded)
-  ['#123a22', '#1a4b2b', '#235f37', '#2e7744', '#3a8c52'], // 2: outer
-];
-function needleSprite(pal, snowy, seed) {
-  const c = mk(SS, SS), g = c.getContext('2d'), r = rng(seed);
-  g.translate(SS / 2, SS / 2); g.lineCap = 'round';
-  g.fillStyle = pal[0];
-  g.beginPath(); g.ellipse(0, 4, SS * 0.27, SS * 0.15, 0, 0, TAU); g.fill();
-  const N = 150;
+// ================================================================ SPRITE ATLAS
+// Everything drawn once into one big texture. Sprites are white/neutral
+// where they get tinted per-instance.
+const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+const ATLAS = 2048, PAD = 28;
+const atlas = mk(ATLAS, ATLAS), ag = atlas.getContext('2d');
+let shX = 0, shY = 0, shH = 0;
+function sprite(w, h, draw) {
+  if (shX + w + PAD > ATLAS) { shX = 0; shY += shH + PAD; shH = 0; }
+  const x = shX + PAD / 2, y = shY + PAD / 2;
+  ag.save(); ag.translate(x, y); ag.beginPath(); ag.rect(0, 0, w, h); ag.clip(); draw(ag, w, h); ag.restore();
+  shX += w + PAD; shH = Math.max(shH, h);
+  return [x / ATLAS, y / ATLAS, (x + w) / ATLAS, (y + h) / ATLAS];
+}
+const UV = {};
+
+// needles: drawn in a mid green; the shader does all darkening/lighting
+const NEEDLE_PAL = ['#1a4a2a', '#22603a', '#2b7446', '#358a52', '#46a062'];
+const NEEDLE_K = 1.6; // sprite content is drawn at 1/NEEDLE_K of the cell so blurring never hits the cell edge
+function drawNeedles(g, cell, snowy, seed) {
+  const r = rng(seed), S = cell / NEEDLE_K;
+  g.translate(cell / 2, cell / 2); g.lineCap = 'round';
+  g.fillStyle = '#163e24';
+  g.beginPath(); g.ellipse(0, 3, S * 0.27, S * 0.16, 0, 0, TAU); g.fill();
+  const N = 170;
   for (let i = 0; i < N; i++) {
-    const k = i / N;                                // later needles = lighter, more on top
-    const a = r() * TAU, rad = Math.pow(r(), 0.55) * SS * 0.34;
-    const x = Math.cos(a) * rad * 1.2, y = Math.sin(a) * rad * 0.7 - k * SS * 0.06;
+    const k = i / N;
+    const a = r() * TAU, rad = Math.pow(r(), 0.55) * S * 0.36;
+    const x = Math.cos(a) * rad * 1.2, y = Math.sin(a) * rad * 0.72 - k * S * 0.06;
     const ang = Math.atan2(y, x) + (r() - 0.5) * 1.1;
-    const len = SS * (0.05 + r() * 0.07);
-    g.strokeStyle = pal[Math.min(pal.length - 1, Math.floor(k * pal.length + r() * 0.8))];
-    g.lineWidth = SS * 0.016;
-    g.beginPath(); g.moveTo(x, y);
-    g.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len * 0.6 + len * 0.3);
-    g.stroke();
+    const len = S * (0.05 + r() * 0.075);
+    g.strokeStyle = NEEDLE_PAL[Math.min(NEEDLE_PAL.length - 1, Math.floor(k * NEEDLE_PAL.length + r() * 0.8))];
+    g.lineWidth = S * 0.017;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len * 0.6 + len * 0.3); g.stroke();
   }
   if (snowy) {
-    for (let i = 0; i < 9; i++) {
-      const x = (r() - 0.5) * SS * 0.6, y = -SS * 0.08 - r() * SS * 0.07 + Math.abs(x) * 0.25;
-      const rx = SS * (0.07 + r() * 0.08), ry = rx * 0.45;
-      g.fillStyle = '#9fb3cf'; g.beginPath(); g.ellipse(x, y + ry * 0.5, rx, ry, 0, 0, TAU); g.fill();
-      g.fillStyle = '#eef4ff'; g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, TAU); g.fill();
+    for (let i = 0; i < 11; i++) {
+      const x = (r() - 0.5) * S * 0.66, y = -S * 0.07 - r() * S * 0.08 + Math.abs(x) * 0.25;
+      const rx = S * (0.07 + r() * 0.09), ry = rx * 0.45;
+      g.fillStyle = '#8fa2c4'; g.beginPath(); g.ellipse(x, y + ry * 0.55, rx, ry, 0, 0, TAU); g.fill();
+      g.fillStyle = '#f2f6ff'; g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, TAU); g.fill();
     }
   }
-  return c;
 }
-const NEEDLES = PAL.map((pal, si) => [0, 1].map(sn => [0, 1, 2].map(v => needleSprite(pal, sn, si * 100 + sn * 10 + v + 1))));
+UV.needle = [0, 1].map(sn => [0, 1, 2, 3].map(v => sprite(128, 128, (g, w) => drawNeedles(g, w, sn, 100 + sn * 10 + v))));
+
+function radial(g, cx, cy, r, stops) {
+  const gr = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+  stops.forEach(([o, c]) => gr.addColorStop(o, c));
+  g.fillStyle = gr; g.fillRect(cx - r, cy - r, r * 2, r * 2);
+}
+UV.glow  = sprite(64, 64, (g, w) => radial(g, w / 2, w / 2, w / 2, [[0, 'rgba(255,255,255,1)'], [0.15, 'rgba(255,255,255,.75)'], [0.45, 'rgba(255,255,255,.18)'], [1, 'rgba(255,255,255,0)']]));
+UV.flake = sprite(64, 64, (g, w) => radial(g, w / 2, w / 2, w * 0.3, [[0, 'rgba(255,255,255,1)'], [0.5, 'rgba(255,255,255,.8)'], [1, 'rgba(255,255,255,0)']]));
+UV.disc  = sprite(32, 32, (g, w) => { g.fillStyle = '#fff'; g.beginPath(); g.arc(w / 2, w / 2, w / 2 - 1, 0, TAU); g.fill(); });
+UV.shadow = sprite(64, 32, (g, w, h) => { g.scale(1, h / w); radial(g, w / 2, w / 2, w / 2, [[0, 'rgba(0,0,0,.9)'], [0.6, 'rgba(0,0,0,.5)'], [1, 'rgba(0,0,0,0)']]); });
+UV.shaft = sprite(32, 256, (g, w, h) => {
+  const gr = g.createLinearGradient(0, 0, w, 0);
+  gr.addColorStop(0, 'rgba(255,255,255,0)'); gr.addColorStop(0.5, 'rgba(255,255,255,1)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  g.globalCompositeOperation = 'destination-in';
+  const gv = g.createLinearGradient(0, 0, 0, h);
+  gv.addColorStop(0, 'rgba(0,0,0,0)'); gv.addColorStop(0.2, 'rgba(0,0,0,1)'); gv.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gv; g.fillRect(0, 0, w, h);
+});
+UV.puff = [0, 1, 2].map(v => sprite(128, 96, (g, w, h) => {
+  const r = rng(500 + v);
+  for (let i = 0; i < 14; i++) {
+    const x = w * (0.32 + r() * 0.36), y = h * (0.42 + r() * 0.16), rr = w * (0.08 + r() * 0.1);
+    radial(g, x, y, rr, [[0, 'rgba(255,255,255,.35)'], [1, 'rgba(255,255,255,0)']]);
+  }
+}));
+UV.trunk = sprite(64, 1024, (g, w, h) => {
+  const r = rng(77);
+  for (let y = 0; y < h; y++) {
+    const wy = (1 - y / h) * 101.5;                  // row → world height (top of sprite = tip)
+    const hw = trunkR(wy) / trunkR(0) * w / 2;
+    const gr = g.createLinearGradient(w / 2 - hw, 0, w / 2 + hw, 0);
+    gr.addColorStop(0, '#1a0e07'); gr.addColorStop(0.35, '#5a3a22'); gr.addColorStop(0.6, '#3e2615'); gr.addColorStop(1, '#120904');
+    g.fillStyle = gr; g.fillRect(w / 2 - hw, y, hw * 2, 1);
+  }
+  g.globalAlpha = 0.25; g.strokeStyle = '#000'; g.lineWidth = 1;
+  for (let i = 0; i < 90; i++) { const x = w / 2 + (r() - 0.5) * w * 0.7, y = r() * h; g.beginPath(); g.moveTo(x, y); g.lineTo(x + (r() - 0.5) * 3, y + 10 + r() * 30); g.stroke(); }
+});
 
 const ORN_COLORS = ['#b3122e', '#d9a520', '#1d4fb8', '#c9ccd6', '#7a2bb0', '#0f8a6a'];
-function ballSprite(col, banded) {
-  const S = 96, c = mk(S, S), g = c.getContext('2d');
-  const gr = g.createRadialGradient(S * 0.36, S * 0.34, S * 0.04, S / 2, S / 2, S * 0.48);
+const BALL_W = 96, BALL_H = 150;
+function drawBall(g, col, banded) {
+  const W = BALL_W, H = BALL_H, cy = H - W / 2, r = W * 0.46;
+  g.strokeStyle = 'rgba(230,210,160,.8)'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(W / 2, 0); g.lineTo(W / 2, cy - r); g.stroke();
+  g.fillStyle = '#c2a457'; g.fillRect(W / 2 - r * 0.22, cy - r * 1.1, r * 0.44, r * 0.24);
+  const gr = g.createRadialGradient(W * 0.36, cy - r * 0.35, W * 0.03, W / 2, cy, r);
   gr.addColorStop(0, '#fff'); gr.addColorStop(0.12, col); gr.addColorStop(0.75, col); gr.addColorStop(1, '#000');
-  g.fillStyle = gr; g.beginPath(); g.arc(S / 2, S / 2, S * 0.46, 0, TAU); g.fill();
+  g.fillStyle = gr; g.beginPath(); g.arc(W / 2, cy, r, 0, TAU); g.fill();
   if (banded) {
-    g.save(); g.beginPath(); g.arc(S / 2, S / 2, S * 0.46, 0, TAU); g.clip();
-    g.fillStyle = 'rgba(255,255,255,.85)'; g.fillRect(0, S * 0.44, S, S * 0.1);
-    g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(0, S * 0.58, S, S * 0.04); g.fillRect(0, S * 0.34, S, S * 0.04);
+    g.save(); g.beginPath(); g.arc(W / 2, cy, r, 0, TAU); g.clip();
+    g.fillStyle = 'rgba(255,255,255,.85)'; g.fillRect(0, cy - r * 0.08, W, r * 0.2);
+    g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(0, cy + r * 0.24, W, r * 0.07); g.fillRect(0, cy - r * 0.36, W, r * 0.07);
     g.restore();
   }
-  return c;
 }
-const BALLS  = ORN_COLORS.map(c => ballSprite(c, false));
-const BALLSB = ORN_COLORS.map(c => ballSprite(c, true));
+UV.ball = [0, 1].map(b => ORN_COLORS.map(c => sprite(BALL_W, BALL_H, g => drawBall(g, c, b))));
 
-function glowSprite(col) {
-  const S = 64, c = mk(S, S), g = c.getContext('2d');
-  const [r, gg, b] = hex(col);
-  const gr = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
-  gr.addColorStop(0, `rgba(255,255,255,1)`); gr.addColorStop(0.12, `rgba(${r},${gg},${b},.9)`);
-  gr.addColorStop(0.4, `rgba(${r},${gg},${b},.25)`); gr.addColorStop(1, `rgba(${r},${gg},${b},0)`);
-  g.fillStyle = gr; g.fillRect(0, 0, S, S);
-  return c;
+UV.cane = sprite(64, 192, (g, w, h) => {
+  const hookR = w * 0.26, x0 = w * 0.62, y0 = hookR + 6;
+  const path = () => { g.beginPath(); g.arc(x0 - hookR, y0, hookR, 0, Math.PI, true); g.moveTo(x0, y0); g.lineTo(x0, h - 8); };
+  g.lineCap = 'round'; g.strokeStyle = '#f4efe6'; g.lineWidth = w * 0.2; path(); g.stroke();
+  g.strokeStyle = '#c4142c'; g.setLineDash([w * 0.13, w * 0.13]); g.lineCap = 'butt'; g.lineWidth = w * 0.2; path(); g.stroke();
+});
+
+const GIFT_COLS = [['#7d1420', '#e8c25a'], ['#173f7a', '#e9e2d0'], ['#1f5c33', '#c21f2d'], ['#d9c9a8', '#7d1420'], ['#4a2366', '#e8c25a'], ['#c95a1a', '#173f7a']];
+UV.box = GIFT_COLS.map(([box, rib]) => sprite(128, 128, (g, w, h) => {
+  g.fillStyle = box; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(0,0,0,.28)'; g.fillRect(w * 0.8, 0, w * 0.2, h);
+  g.fillStyle = 'rgba(0,0,0,.18)'; g.fillRect(0, 0, w, h * 0.08);
+  g.fillStyle = rib; g.fillRect(w * 0.43, 0, w * 0.14, h);
+}));
+UV.lid = GIFT_COLS.map(([box, rib]) => sprite(128, 64, (g, w, h) => {
+  g.fillStyle = box; g.fillRect(0, h * 0.6, w, h * 0.4);
+  g.fillStyle = 'rgba(0,0,0,.2)'; g.fillRect(0, h * 0.86, w, h * 0.14);
+  g.fillStyle = rib; g.fillRect(w * 0.43, h * 0.6, w * 0.14, h * 0.4);
+  g.beginPath(); g.ellipse(w * 0.36, h * 0.38, w * 0.15, h * 0.2, -0.4, 0, TAU); g.ellipse(w * 0.64, h * 0.38, w * 0.15, h * 0.2, 0.4, 0, TAU); g.fill();
+}));
+
+UV.critter = ['#8a8f99', '#6b4a32'].map(fur => sprite(128, 128, (g, w, h) => {
+  g.fillStyle = fur; g.strokeStyle = fur; g.lineCap = 'round'; g.lineWidth = w * 0.06;
+  g.beginPath(); g.moveTo(w * 0.78, h * 0.8); g.quadraticCurveTo(w * 1.0, h * 0.75, w * 0.92, h * 0.5); g.stroke();
+  g.beginPath(); g.ellipse(w * 0.52, h * 0.74, w * 0.3, h * 0.24, 0, 0, TAU); g.fill();
+  g.beginPath(); g.arc(w * 0.44, h * 0.42, w * 0.21, 0, TAU); g.fill();
+  g.beginPath(); g.arc(w * 0.28, h * 0.22, w * 0.1, 0, TAU); g.arc(w * 0.58, h * 0.2, w * 0.1, 0, TAU); g.fill();
+  g.fillStyle = '#e8a0a0'; g.beginPath(); g.arc(w * 0.27, h * 0.5, w * 0.03, 0, TAU); g.fill();
+}));
+const EYES = [[0.37, 0.4], [0.53, 0.4]]; // eye centres in critter sprite (fractions)
+
+UV.star = sprite(128, 128, (g, w) => {
+  g.translate(w / 2, w / 2);
+  g.fillStyle = '#ffd56a'; g.strokeStyle = '#fff6d0'; g.lineWidth = 3;
+  g.beginPath();
+  for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? w * 0.19 : w * 0.46; g.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); }
+  g.closePath(); g.fill(); g.stroke();
+});
+UV.rays = sprite(256, 256, (g, w) => {
+  g.translate(w / 2, w / 2);
+  for (let i = 0; i < 16; i++) {
+    g.rotate(TAU / 16);
+    const L = w * (i % 2 ? 0.3 : 0.5);
+    const gr = g.createLinearGradient(0, 0, L, 0);
+    gr.addColorStop(0, 'rgba(255,255,255,.9)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.beginPath(); g.moveTo(0, -w * 0.012); g.lineTo(L, 0); g.lineTo(0, w * 0.012); g.fill();
+  }
+});
+
+// ================================================================ BUILD THE WORLD
+// kinds: 0 blob, 1 light, 2 ball, 3 cane, 4 critter, 5 gift, 6 star, 7 puff, 8 shaft, 9 trunk, 10 particle
+const blobs = [], lights = [], things = [], puffs = [], shafts = [], branches = [];
+
+function nearCameraPath(x, y, z, clear) {
+  const c = camAtAltitude(y);
+  const cx = c.R * Math.sin(c.phi), cz = c.R * Math.cos(c.phi);
+  return (x - cx) ** 2 + (z - cz) ** 2 < clear * clear;
 }
-const GLOW_WARM = ['#ffcf7a', '#ff8a5c', '#ffe9b0', '#ff5f6d'].map(glowSprite);
-const GLOW_COLD = ['#bfe3ff', '#ffffff', '#9fc4ff', '#e6f0ff'].map(glowSprite);
-
-// ---------------------------------------------------------------- build the world
-const blobs = [], sticks = [], lights = [], hangers = [], branches = [];
+function addBlob(x, y, z, size, inner, snowP) {
+  if (nearCameraPath(x, y, z, 1.6 + size * 0.35)) return;
+  const v = 0.9 + R() * 0.2;
+  const b = lerp(0.42, 1.0, inner);
+  blobs.push({ kind: 0, x, y, z, size, flip: R() < 0.5 ? -1 : 1,
+    uv: UV.needle[R() < snowP ? 1 : 0][(R() * 4) | 0],
+    tr: b * v * 0.95, tg: b * v, tb: b * v * 0.95 });
+}
 {
-  let y = 5.2, tier = 0;
+  let y = 4.8, tier = 0;
   while (y < 98.5) {
     const h = y / TREE_H;
-    const n = Math.max(5, Math.round(lerp(10, 6, h)));
-    const off = tier * 2.39996; // golden angle — no branch stacks directly on the one below
+    const n = Math.round(lerp(12, 7, h));
+    const off = tier * 2.39996;
+    const snowP = smooth(58, 82, y);
     for (let b = 0; b < n; b++) {
-      const a = off + (b / n) * TAU + rand(-0.25, 0.25);
-      const L = coneR(y) * rand(0.82, 1.04);
+      const a = off + (b / n) * TAU + rand(-0.22, 0.22);
+      const L = coneR(y) * rand(0.84, 1.04);
       const r0 = trunkR(y);
-      const drop = L * rand(0.18, 0.32);
+      const drop = L * rand(0.18, 0.3);
       const sizeK = lerp(1, 0.62, h);
       const ca = Math.cos(a), sa = Math.sin(a), ty = y;
       const pt = t => { const r = r0 + (L - r0) * t; return [r * ca, ty - drop * Math.pow(t, 1.7), r * sa]; };
-      const br = { y, a, L, pt, sizeK, used: false };
-      branches.push(br);
-      const A = pt(0), B = pt(0.85);
-      sticks.push({ ax: A[0], ay: A[1], az: A[2], bx: B[0], by: B[1], bz: B[2], w: 0.35 * sizeK + 0.1 });
+      branches.push({ y, a, L, pt, sizeK, used: false });
 
-      const step = 2.0 * sizeK + 0.3;
+      const step = 1.5 * sizeK + 0.3;
       const count = Math.max(2, Math.round((L - r0) / step));
       for (let i = 0; i < count; i++) {
-        const t = Math.min(1, 0.1 + 0.9 * (i + rand(0, 0.6)) / count);
-        const p = pt(t);
-        const lat = rand(-0.9, 0.9) * sizeK;
-        blobs.push({
-          type: 0, x: p[0] - sa * lat, y: p[1] + rand(-0.4, 0.4) * sizeK, z: p[2] + ca * lat,
-          size: lerp(3.8, 2.4, t) * sizeK * rand(0.85, 1.2),
-          shade: t < 0.4 ? 1 : 2,
-          snowy: R() < smooth(62, 84, y) ? 1 : 0,
-          v: (R() * 3) | 0, flip: R() < 0.5 ? -1 : 1,
-        });
+        const t = Math.min(1, 0.08 + 0.92 * (i + rand(0, 0.6)) / count);
+        const p = pt(t), lat = rand(-0.8, 0.8) * sizeK;
+        addBlob(p[0] - sa * lat, p[1] + rand(-0.4, 0.4) * sizeK, p[2] + ca * lat, lerp(4.2, 2.8, t) * sizeK * rand(0.85, 1.2), t, snowP);
       }
-      const nl = (R() * 3) | 0;
+      // side shoots
+      for (let s = 0; s < 2; s++) {
+        const t0 = rand(0.35, 0.8), p0 = pt(t0), side = s ? 1 : -1;
+        const sl = L * rand(0.18, 0.3), sa2 = a + side * rand(0.6, 1.0);
+        for (let j = 1; j <= 3; j++) {
+          const f = j / 3;
+          addBlob(p0[0] + Math.cos(sa2) * sl * f, p0[1] - f * 0.6 * sizeK, p0[2] + Math.sin(sa2) * sl * f, 2.8 * sizeK * rand(0.85, 1.15), t0, snowP);
+        }
+      }
+      const nl = 2 + ((R() * 4) | 0);
       for (let i = 0; i < nl; i++) {
-        const p = pt(rand(0.3, 1));
-        lights.push({ type: 1, x: p[0], y: p[1] - 0.3 * sizeK, z: p[2], c: (R() * 4) | 0, ph: rand(0, TAU), sp: rand(0.8, 2.6), cold: y > 72 });
+        const p = pt(rand(0.25, 1));
+        const cold = y > 70;
+        const col = cold ? [[0.75, 0.88, 1], [1, 1, 1], [0.6, 0.75, 1]][(R() * 3) | 0] : [[1, 0.78, 0.42], [1, 0.52, 0.34], [1, 0.9, 0.62], [1, 0.36, 0.42]][(R() * 4) | 0];
+        lights.push({ kind: 1, x: p[0] + rand(-0.4, 0.4), y: p[1] - 0.3 * sizeK, z: p[2] + rand(-0.4, 0.4), col, ph: rand(0, TAU), sp: rand(0.8, 2.6) });
       }
     }
-    y += lerp(4.0, 2.3, h) * rand(0.9, 1.1); tier++;
+    y += lerp(3.4, 2.0, h) * rand(0.9, 1.1); tier++;
+  }
+  // the leader — the top shoot the star sits on
+  for (let yy = 92; yy < 101.5; yy += 0.55) {
+    const k = (101.5 - yy) / 9.5;
+    for (let j = 0; j < 4; j++) {
+      const a = rand(0, TAU), r = rand(0, 1.6) * k;
+      addBlob(Math.cos(a) * r, yy, Math.sin(a) * r, lerp(1.1, 2.3, k) * rand(0.9, 1.2), 1, 0.85);
+    }
   }
 }
 
-// the leader — the top shoot the star sits on
-for (let y = 93; y < 101.5; y += 0.7) {
-  const k = (101.5 - y) / 8.5;
-  for (let j = 0; j < 3; j++) {
-    const a = rand(0, TAU), r = rand(0, 1.4) * k;
-    blobs.push({ type: 0, x: Math.cos(a) * r, y, z: Math.sin(a) * r, size: lerp(1.0, 2.0, k) * rand(0.9, 1.2),
-      shade: 2, snowy: R() < 0.8 ? 1 : 0, v: (R() * 3) | 0, flip: R() < 0.5 ? -1 : 1 });
-  }
-}
-
-// pick a branch at altitude yMin..yMax that sits off to one side of the camera's view
 function pickBranch(yMin, yMax, side) {
   let best = null, bestScore = 1e9;
   for (const br of branches) {
     if (br.used || br.y < yMin || br.y > yMax) continue;
     const c = camAtAltitude(br.y);
-    let diff = br.a - facing(c.phi);
-    diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+    let diff = br.a - facing(c.phi); diff = Math.atan2(Math.sin(diff), Math.cos(diff));
     const score = Math.abs(diff - side) + Math.abs(br.y - (yMin + yMax) / 2) * 0.02;
     if (score < bestScore) { bestScore = score; best = br; }
   }
   best.used = true;
   const c = camAtAltitude(best.y);
-  const rWant = Math.min(best.L * 0.85, c.R - 8);
-  const t = clamp(rWant / best.L, 0.3, 0.95);
+  const t = clamp(Math.min(best.L * 0.85, c.R - 7.5) / best.L, 0.3, 0.95);
   return { br: best, p: best.pt(t) };
 }
+const anim = () => ({ h: 0, act: -1, sw: rand(0, TAU) });
 
-// --- interactive ornaments (level 1)
-LINKS.ornaments.forEach((id, i) => {
-  const { br, p } = pickBranch(11 + i * 8, 18 + i * 8, i % 2 ? 0.32 : -0.32);
-  hangers.push({ type: 2, kind: 'ball', x: p[0], y: p[1] - 0.35 * br.sizeK, z: p[2], len: 1.1, rad: 0.95 * br.sizeK + 0.15,
-    col: i % ORN_COLORS.length, page: id, h: 0, act: -1, sw: rand(0, TAU) });
+LINKS.ornaments.forEach((page, i) => {
+  const { br, p } = pickBranch(11 + i * 8, 18 + i * 8, i % 2 ? 0.3 : -0.3);
+  things.push({ kind: 2, x: p[0], y: p[1] - 0.4 * br.sizeK, z: p[2], rad: 0.95 * br.sizeK + 0.2, col: i % ORN_COLORS.length, banded: 1, page, ...anim() });
 });
-// --- level 2: candy canes + creatures
-LINKS.canes.forEach((id, i) => {
-  const { br, p } = pickBranch(48 + i * 12, 54 + i * 12, i % 2 ? -0.3 : 0.3);
-  hangers.push({ type: 2, kind: 'cane', x: p[0], y: p[1] - 0.3 * br.sizeK, z: p[2], len: 0.2, rad: 2.6 * br.sizeK,
-    page: id, h: 0, act: -1, sw: rand(0, TAU) });
+LINKS.canes.forEach((page, i) => {
+  const { br, p } = pickBranch(46 + i * 12, 52 + i * 12, i % 2 ? -0.3 : 0.3);
+  things.push({ kind: 3, x: p[0], y: p[1] - 0.3 * br.sizeK, z: p[2], len: 2.8 * br.sizeK, page, ...anim() });
 });
-LINKS.creatures.forEach((id, i) => {
-  const { br, p } = pickBranch(54 + i * 14, 60 + i * 14, i % 2 ? 0.28 : -0.28);
-  hangers.push({ type: 3, x: p[0], y: p[1] + 0.9 * br.sizeK, z: p[2], rad: 1.4 * br.sizeK,
-    page: id, h: 0, act: -1, sw: rand(0, TAU), fur: i ? '#6b4a32' : '#8a8f99' });
+LINKS.creatures.forEach((page, i) => {
+  const { br, p } = pickBranch(52 + i * 14, 58 + i * 14, i % 2 ? 0.28 : -0.28);
+  things.push({ kind: 4, x: p[0], y: p[1] + 0.5 * br.sizeK, z: p[2], rad: 1.4 * br.sizeK, fur: i % 2, page, ...anim() });
 });
-// --- decorative ornaments everywhere else
 for (const br of branches) {
-  if (br.used || br.y < 7 || br.y > 92 || R() > 0.4) continue;
+  if (br.used || br.y < 7 || br.y > 93 || R() > 0.32) continue;
   const p = br.pt(rand(0.55, 0.95));
-  const big = br.y < 45;
-  hangers.push({ type: 2, kind: br.y > 48 && R() < 0.3 ? 'cane' : 'ball', deco: true,
-    x: p[0], y: p[1] - 0.35 * br.sizeK, z: p[2], len: rand(0.6, 1.2), rad: (big ? 0.8 : 0.65) * br.sizeK + 0.15,
-    col: (R() * ORN_COLORS.length) | 0, h: 0, act: -1, sw: rand(0, TAU) });
+  if (br.y > 46 && R() < 0.3) things.push({ kind: 3, deco: true, x: p[0], y: p[1] - 0.3 * br.sizeK, z: p[2], len: 2.0 * br.sizeK, ...anim() });
+  else things.push({ kind: 2, deco: true, x: p[0], y: p[1] - 0.35 * br.sizeK, z: p[2], rad: (br.y < 45 ? 0.8 : 0.65) * br.sizeK + 0.15, col: (R() * ORN_COLORS.length) | 0, banded: 0, ...anim() });
 }
-// --- gifts on the floor
-const gifts = [];
 {
   const a0 = facing(camAt(0).phi);
-  const GIFT_COLS = [['#7d1420', '#e8c25a'], ['#173f7a', '#e9e2d0'], ['#1f5c33', '#c21f2d'], ['#d9c9a8', '#7d1420'], ['#4a2366', '#e8c25a'], ['#c95a1a', '#173f7a']];
   const slots = [[-0.42, 10.5], [-0.14, 13.5], [0.12, 9], [0.38, 12.5]];
-  LINKS.gifts.forEach((id, i) => {
+  LINKS.gifts.forEach((page, i) => {
     const [da, r] = slots[i];
-    gifts.push({ type: 4, x: Math.cos(a0 + da) * r, y: 0, z: Math.sin(a0 + da) * r,
-      w: rand(2.2, 3.2), hh: rand(1.6, 2.6), col: GIFT_COLS[i], page: id, h: 0, act: -1 });
+    things.push({ kind: 5, x: Math.cos(a0 + da) * r, y: 0, z: Math.sin(a0 + da) * r, w: rand(2.2, 3.2), hh: rand(1.6, 2.6), ci: i, page, ...anim() });
   });
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 14; i++) {
     const a = a0 + rand(0.7, TAU - 0.7), r = rand(5, 16);
-    gifts.push({ type: 4, deco: true, x: Math.cos(a) * r, y: 0, z: Math.sin(a) * r,
-      w: rand(1.4, 3.4), hh: rand(1.0, 2.8), col: GIFT_COLS[(R() * GIFT_COLS.length) | 0], h: 0, act: -1 });
+    things.push({ kind: 5, deco: true, x: Math.cos(a) * r, y: 0, z: Math.sin(a) * r, w: rand(1.4, 3.4), hh: rand(1.0, 2.8), ci: (R() * GIFT_COLS.length) | 0, ...anim() });
   }
 }
-const star = { type: 5, x: 0, y: 102.5, z: 0, rad: 3.4, page: LINKS.star, h: 0, act: -1 };
-const trunk = { type: 6 };
+things.push({ kind: 6, x: 0, y: 102.5, z: 0, rad: 3.4, page: LINKS.star, ...anim() });
 
-const world = [...blobs, ...lights, ...hangers, ...gifts, star];
-const interactive = [...hangers.filter(o => !o.deco), ...gifts.filter(o => !o.deco), star];
+// mist inside the tree + the cloud layer the tree pokes through
+for (let i = 0; i < 170; i++) {
+  const y = rand(1, 60), a = rand(0, TAU), r = Math.sqrt(R()) * (coneR(y) + 6);
+  const warm = 1 - smooth(10, 45, y);
+  puffs.push({ kind: 7, x: Math.cos(a) * r, y, z: Math.sin(a) * r, size: rand(6, 14), rot: rand(-0.3, 0.3), v: (R() * 3) | 0,
+    col: mix3([0.85, 0.6, 0.42], [0.62, 0.58, 0.85], 1 - warm), a: rand(0.1, 0.2) });
+}
+for (let i = 0; i < 260; i++) {
+  const y = rand(62, 76), a = rand(0, TAU), r = Math.pow(R(), 0.7) * 140;
+  puffs.push({ kind: 7, x: Math.cos(a) * r, y, z: Math.sin(a) * r, size: rand(14, 34), rot: rand(-0.15, 0.15), v: (R() * 3) | 0,
+    col: [0.72, 0.8, 0.98], a: rand(0.16, 0.32) });
+}
+// light shafts in the room, slanting in from a high window
+for (let i = 0; i < 10; i++) {
+  const a = rand(0, TAU), r = rand(4, 26);
+  shafts.push({ kind: 8, x: Math.cos(a) * r, y: rand(34, 48), z: Math.sin(a) * r, w: rand(1.5, 4), h: rand(40, 55), a: rand(0.05, 0.11), ph: rand(0, TAU) });
+}
+const trunk = { kind: 9, x: 0, y: 0, z: 0 };
 
-// sky stuff (screen-space)
-const stars = Array.from({ length: 420 }, () => ({ az: rand(0, TAU), el: rand(0, 1), m: rand(0.3, 1), ph: rand(0, TAU) }));
-const snow  = Array.from({ length: 260 }, () => ({ x: R(), y: R(), z: rand(0.25, 1), ph: rand(0, TAU) }));
+// particles live in camera space and wrap around it
+const DUST = Array.from({ length: 520 }, () => ({ kind: 10, snow: 0, u: R(), v: R(), w: R(), ph: rand(0, TAU), sz: rand(0.05, 0.12) }));
+const SNOW = Array.from({ length: 1100 }, () => ({ kind: 10, snow: 1, u: R(), v: R(), w: R(), ph: rand(0, TAU), sz: rand(0.06, 0.15) }));
 
-// ---------------------------------------------------------------- state
+const world = [...blobs, ...lights, ...things, ...puffs, ...shafts];
+const interactive = things.filter(o => !o.deco);
+
+// ================================================================ CANVASES
+const skyC = document.getElementById('sky'), sky = skyC.getContext('2d');
+const cvs = document.getElementById('scene');
+const gl = cvs.getContext('webgl2', { premultipliedAlpha: true, alpha: true, antialias: false });
+let W = 0, H = 0, DPR = 1, F = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 1.5);
+  W = innerWidth; H = innerHeight;
+  for (const c of [skyC, cvs]) { c.width = Math.round(W * DPR); c.height = Math.round(H * DPR); }
+  F = Math.min(H, W * 1.3) * 0.95;
+  gl.viewport(0, 0, cvs.width, cvs.height);
+}
+
+// ---------------------------------------------------------------- GL program
+const VS = `#version 300 es
+layout(location=0) in vec2 c;
+layout(location=1) in vec3 a_pos;
+layout(location=2) in float a_rot;
+layout(location=3) in vec2 a_size;
+layout(location=4) in vec2 a_off;
+layout(location=5) in vec4 a_uv;
+layout(location=6) in vec4 a_tint;
+layout(location=7) in vec4 a_p;     // additive, lit, fogScale, nearOpaqueDist
+uniform vec3 u_cam; uniform vec2 u_sc; uniform float u_F, u_hz; uniform vec2 u_vp;
+out vec2 v_uv; out vec4 v_tint; out vec3 v_p; out float v_d; out float v_wy; out float v_fade; out float v_dof;
+void main(){
+  vec3 rel = a_pos - u_cam;
+  float d = max(-(rel.x*u_sc.x + rel.z*u_sc.y), 0.05);
+  float lx = rel.x*u_sc.y - rel.z*u_sc.x;
+  float s = u_F / d;
+  vec2 anchor = vec2(u_vp.x*0.5 + lx*s, u_hz - rel.y*s);
+  vec2 local = (c - a_off) * a_size * s;
+  float cr = cos(a_rot), sr = sin(a_rot);
+  local = vec2(local.x*cr - local.y*sr, local.x*sr + local.y*cr);
+  vec2 px = anchor + local;
+  gl_Position = vec4(px.x/u_vp.x*2.0-1.0, 1.0-px.y/u_vp.y*2.0, 0.0, 1.0);
+  v_uv = mix(a_uv.xy, a_uv.zw, c);
+  v_tint = a_tint; v_p = a_p.xyz; v_d = d; v_dof = a_p.w > 0.0 ? 1.0 : 0.0;
+  v_wy = a_pos.y + (a_off.y - c.y) * a_size.y;
+  float fade = smoothstep(${NEAR.toFixed(2)}, abs(a_p.w), d);
+  float scr = abs(a_size.y) * s / u_vp.y;                 // fraction of screen height covered
+  fade *= 1.0 - smoothstep(1.4, 3.2, scr);
+  v_fade = fade;
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_tex; uniform vec3 u_haze; uniform float u_k, u_camY;
+uniform vec3 u_lw, u_lm, u_lc;
+in vec2 v_uv; in vec4 v_tint; in vec3 v_p; in float v_d; in float v_wy; in float v_fade; in float v_dof;
+out vec4 o;
+void main(){
+  float d = v_d;
+  // depth of field: close = very soft, far = a little soft
+  float bias = ((1.0 - smoothstep(0.8, 6.0, d)) * 3.2 + smoothstep(30.0, 90.0, d) * 1.2) * v_dof;
+  vec4 t = texture(u_tex, v_uv, bias);
+  vec3 col = t.rgb * v_tint.rgb;
+  if (v_p.y > 0.0) {
+    vec3 lc = mix(mix(u_lw, u_lm, smoothstep(8.0, 45.0, v_wy)), u_lc, smoothstep(55.0, 85.0, v_wy));
+    float elev = (v_wy - u_camY) / d;
+    float under = smoothstep(0.0, 1.1, elev);              // seen from below → shadowed underside
+    float near = 1.0 - smoothstep(1.0, 8.0, d);            // right in your face → silhouette
+    float L = mix(1.0, 0.3, under) * mix(1.0, 0.2, near);
+    col = mix(col, col * lc * L, v_p.y);
+  }
+  float fog = (1.0 - exp(-u_k * max(0.0, d - 2.5))) * v_p.z;
+  col = mix(col, u_haze * t.a, fog);
+  float a = t.a * v_tint.a * v_fade;
+  col *= v_tint.a * v_fade;
+  o = vec4(col, a * (1.0 - v_p.x));
+}`;
+function compile(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+const U = {};
+for (const n of ['u_cam', 'u_sc', 'u_F', 'u_hz', 'u_vp', 'u_tex', 'u_haze', 'u_k', 'u_camY', 'u_lw', 'u_lm', 'u_lc']) U[n] = gl.getUniformLocation(prog, n);
+
+const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const STRIDE = 20;
+let CAP = 16384, inst = new Float32Array(CAP * STRIDE), N = 0;
+const ibuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, ibuf);
+gl.bufferData(gl.ARRAY_BUFFER, inst.byteLength, gl.DYNAMIC_DRAW);
+[[1, 3, 0], [2, 1, 3], [3, 2, 4], [4, 2, 6], [5, 4, 8], [6, 4, 12], [7, 4, 16]].forEach(([loc, size, off]) => {
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, size, gl.FLOAT, false, STRIDE * 4, off * 4);
+  gl.vertexAttribDivisor(loc, 1);
+});
+
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
+gl.generateMipmap(gl.TEXTURE_2D);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.uniform1i(U.u_tex, 0);
+gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+gl.uniform3fv(U.u_lw, LIGHT_WARM); gl.uniform3fv(U.u_lm, LIGHT_MID); gl.uniform3fv(U.u_lc, LIGHT_COOL);
+
+addEventListener('resize', resize); resize();
+
+// push one sprite instance
+// pos, rotation, size (world), anchor within sprite (0..1), uv, tint rgba, additive, lit, fogScale, nearOpaque
+function push(x, y, z, rot, w, h, ox, oy, uv, r, g, b, a, add, lit, fogS, nearA) {
+  if (N >= CAP) {
+    CAP *= 2; const n = new Float32Array(CAP * STRIDE); n.set(inst); inst = n;
+    gl.bufferData(gl.ARRAY_BUFFER, inst.byteLength, gl.DYNAMIC_DRAW);
+  }
+  const i = N++ * STRIDE;
+  inst[i] = x; inst[i + 1] = y; inst[i + 2] = z; inst[i + 3] = rot;
+  inst[i + 4] = w; inst[i + 5] = h; inst[i + 6] = ox; inst[i + 7] = oy;
+  inst[i + 8] = uv[0]; inst[i + 9] = uv[1]; inst[i + 10] = uv[2]; inst[i + 11] = uv[3];
+  inst[i + 12] = r; inst[i + 13] = g; inst[i + 14] = b; inst[i + 15] = a;
+  inst[i + 16] = add; inst[i + 17] = lit; inst[i + 18] = fogS; inst[i + 19] = nearA;
+}
+
+// ================================================================ CAMERA + INPUT
 const cam = { x: 0, y: 0, z: 0, phi: 0, R: 20, sin: 0, cos: 1, hzPx: 0 };
 let pTarget = 0, pNow = 0;
-let mx = 0, my = 0, mxS = 0, myS = 0;               // pointer, -1..1, smoothed
-let px = -1, py = -1, pointerIn = false;           // pointer in css px
+let mx = 0, my = 0, mxS = 0, myS = 0;
+let px = -1, py = -1, pointerIn = false;
 let hovered = null, opening = null;
 
-function scrollP() {
-  const max = document.documentElement.scrollHeight - innerHeight;
-  return max > 0 ? scrollY / max : 0;
-}
+function scrollP() { const max = document.documentElement.scrollHeight - innerHeight; return max > 0 ? scrollY / max : 0; }
 addEventListener('scroll', () => { pTarget = scrollP(); }, { passive: true });
-addEventListener('pointermove', e => {
-  px = e.clientX; py = e.clientY; pointerIn = true;
-  mx = (px / W) * 2 - 1; my = (py / H) * 2 - 1;
-});
-addEventListener('pointerleave', () => { pointerIn = false; });
+addEventListener('pointermove', e => { px = e.clientX; py = e.clientY; pointerIn = true; mx = (px / W) * 2 - 1; my = (py / H) * 2 - 1; });
+document.addEventListener('pointerleave', () => { pointerIn = false; });
 cvs.addEventListener('click', e => {
   px = e.clientX; py = e.clientY;
   const hit = hitTest();
@@ -315,318 +561,264 @@ cvs.addEventListener('click', e => {
 });
 const pageEl = document.getElementById('page');
 pageEl.addEventListener('click', () => pageEl.classList.remove('open'));
-function openPage(id) {
-  document.getElementById('page-id').textContent = id;
-  pageEl.classList.add('open');
-}
+function openPage(id) { document.getElementById('page-id').textContent = id; pageEl.classList.add('open'); }
 
-// ---------------------------------------------------------------- projection
 function project(o, x, y, z) {
   const rx = x - cam.x, rz = z - cam.z;
   const d = -(rx * cam.sin + rz * cam.cos);
   o.d = d;
   if (d < NEAR) return false;
-  const lx = rx * cam.cos - rz * cam.sin;
   const s = F / d;
-  o.s = s; o.sx = W / 2 + lx * s; o.sy = cam.hzPx - (y - cam.y) * s;
+  o.s = s; o.sx = W / 2 + (rx * cam.cos - rz * cam.sin) * s; o.sy = cam.hzPx - (y - cam.y) * s;
   return true;
 }
-const tmp = {};
-
-// ---------------------------------------------------------------- background
-const BG = [
-  [0,   '#120806', '#3a1c11'],  // room: warm, dark
-  [30,  '#0e0812', '#2a1420'],
-  [55,  '#070a20', '#141a3a'],  // dusk — the room is dissolving
-  [80,  '#02030b', '#0b1330'],  // night sky
-  [120, '#010208', '#081028'],
-].map(([y, a, b]) => [y, hex(a), hex(b)]);
-function bgAt(y) {
-  let i = 0; while (i < BG.length - 2 && y > BG[i + 1][0]) i++;
-  const t = clamp((y - BG[i][0]) / (BG[i + 1][0] - BG[i][0]), 0, 1);
-  return [mix(BG[i][1], BG[i + 1][1], t), mix(BG[i][2], BG[i + 1][2], t)];
+// world position of a point offset (dx right, dy down, world units) from an anchor in the billboard plane, rotated
+function bOff(x, y, z, dx, dy, rot) {
+  const c = Math.cos(rot), s = Math.sin(rot);
+  const rx = dx * c - dy * s, ry = dx * s + dy * c;
+  return [x + cam.cos * rx, y - ry, z - cam.sin * rx];
 }
-let bgGrad = null;
-function drawBackground(t) {
-  const [top, bot] = bgAt(cam.y);
-  bgGrad = ctx.createLinearGradient(0, 0, 0, H);
-  bgGrad.addColorStop(0, top); bgGrad.addColorStop(1, bot);
-  ctx.fillStyle = bgGrad; ctx.fillRect(0, 0, W, H);
+
+// ================================================================ SKY (2D canvas)
+const PAN_W = 2400, PAN_H = 1200;
+const pano = mk(PAN_W, PAN_H);
+{
+  const g = pano.getContext('2d'), r = rng(99);
+  // milky way: a tilted band of haze + dense stars
+  g.save(); g.translate(PAN_W / 2, PAN_H * 0.45); g.rotate(-0.28);
+  for (let i = 0; i < 260; i++) {
+    const x = (r() - 0.5) * PAN_W * 1.3, y = (r() + r() + r() - 1.5) * PAN_H * 0.09, rr = 30 + r() * 120;
+    const c = [[120, 80, 200], [60, 140, 190], [190, 90, 160], [160, 160, 220]][(r() * 4) | 0];
+    const gr = g.createRadialGradient(x, y, 0, x, y, rr);
+    gr.addColorStop(0, `rgba(${c},${0.06 + r() * 0.06})`); gr.addColorStop(1, `rgba(${c},0)`);
+    g.fillStyle = gr; g.fillRect(x - rr, y - rr, rr * 2, rr * 2);
+  }
+  for (let i = 0; i < 2600; i++) {
+    const x = (r() - 0.5) * PAN_W * 1.3, y = (r() + r() + r() + r() - 2) * PAN_H * 0.07;
+    g.fillStyle = `rgba(255,255,255,${0.2 + r() * 0.6})`; g.fillRect(x, y, 1, 1);
+  }
+  for (let i = 0; i < 40; i++) { // dark dust lanes
+    const x = (r() - 0.5) * PAN_W * 1.2, y = (r() - 0.5) * PAN_H * 0.05, rr = 40 + r() * 80;
+    const gr = g.createRadialGradient(x, y, 0, x, y, rr);
+    gr.addColorStop(0, 'rgba(0,0,8,.35)'); gr.addColorStop(1, 'rgba(0,0,8,0)');
+    g.fillStyle = gr; g.fillRect(x - rr, y - rr, rr * 2, rr * 2);
+  }
+  g.restore();
+  for (let i = 0; i < 1400; i++) {
+    const s = r() < 0.04 ? 2 : 1;
+    g.fillStyle = `rgba(${r() < 0.2 ? '255,220,200' : r() < 0.3 ? '200,220,255' : '255,255,255'},${0.25 + r() * 0.75})`;
+    g.fillRect(r() * PAN_W, r() * PAN_H, s, s);
+  }
+}
+const twinklers = Array.from({ length: 120 }, () => ({ u: R(), v: R(), ph: rand(0, TAU), sp: rand(1, 3) }));
+let shooting = null, nextShoot = 4;
+
+function drawSky(t, at) {
+  sky.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const g = sky.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, css(at.top)); g.addColorStop(1, css(at.bot));
+  sky.fillStyle = g; sky.fillRect(0, 0, W, H);
+
+  const kx = F * 0.55, span = TAU * kx;
+  const sa = smooth(55, 82, cam.y);
+  const skyY = -H * 0.25 - (cam.y - 90) * 4;
+  if (sa > 0) {
+    sky.globalAlpha = sa;
+    let x0 = (-(cam.phi * kx)) % span; if (x0 > 0) x0 -= span;
+    const ph = H * 1.5;
+    for (let x = x0; x < W; x += span) sky.drawImage(pano, x, skyY, span, ph);
+    sky.fillStyle = '#fff';
+    for (const s of twinklers) {
+      let x = (s.u * span - cam.phi * kx) % span; if (x < 0) x += span;
+      if (x > W) continue;
+      const a = 0.5 + 0.5 * Math.sin(t * s.sp + s.ph);
+      sky.globalAlpha = sa * a * a;
+      sky.fillRect(x - 0.5, skyY + s.v * ph, 2, 2);
+    }
+    // moon
+    const mxp = W * 0.8 + (camAt(1).phi - cam.phi) * kx, myp = H * 0.18 - (cam.y - 90) * 3;
+    sky.globalAlpha = sa;
+    const mg = sky.createRadialGradient(mxp, myp, 0, mxp, myp, H * 0.45);
+    mg.addColorStop(0, 'rgba(200,215,255,.35)'); mg.addColorStop(0.08, 'rgba(170,190,255,.12)'); mg.addColorStop(1, 'rgba(150,170,255,0)');
+    sky.fillStyle = mg; sky.fillRect(mxp - H * 0.45, myp - H * 0.45, H * 0.9, H * 0.9);
+    sky.fillStyle = '#eef1ff'; sky.beginPath(); sky.arc(mxp, myp, H * 0.035, 0, TAU); sky.fill();
+    sky.fillStyle = 'rgba(160,170,200,.35)';
+    sky.beginPath(); sky.arc(mxp - H * 0.01, myp - H * 0.006, H * 0.009, 0, TAU); sky.arc(mxp + H * 0.012, myp + H * 0.01, H * 0.006, 0, TAU); sky.fill();
+    // shooting stars
+    if (sa > 0.6) {
+      nextShoot -= 1 / 60;
+      if (!shooting && nextShoot < 0) { shooting = { x: rand(0.1, 0.9) * W, y: rand(0.05, 0.35) * H, a: rand(2.5, 2.9), t: 0 }; nextShoot = rand(3, 8); }
+    }
+    if (shooting) {
+      shooting.t += 1 / 60;
+      const k = shooting.t / 0.9, L = 160;
+      const hx = shooting.x + Math.cos(shooting.a) * k * 500, hy = shooting.y - Math.sin(shooting.a) * k * -260;
+      const gr = sky.createLinearGradient(hx, hy, hx - Math.cos(shooting.a) * L, hy - Math.sin(shooting.a) * -L * 0.52);
+      gr.addColorStop(0, 'rgba(255,255,255,.9)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+      sky.globalAlpha = sa * Math.sin(Math.min(1, k) * Math.PI);
+      sky.strokeStyle = gr; sky.lineWidth = 1.5;
+      sky.beginPath(); sky.moveTo(hx, hy); sky.lineTo(hx - Math.cos(shooting.a) * L, hy - Math.sin(shooting.a) * -L * 0.52); sky.stroke();
+      if (k >= 1) shooting = null;
+    }
+    sky.globalAlpha = 1;
+  }
 
   // fire glow from somewhere in the room
   const fire = 1 - smooth(4, 40, cam.y);
   if (fire > 0) {
     const fx = W * 0.5 + Math.sin(-cam.phi + 2.2) * W * 0.9;
-    const g = ctx.createRadialGradient(fx, H * 0.95, 0, fx, H * 0.95, H * 1.1);
     const flick = 0.85 + 0.15 * Math.sin(t * 7.3) * Math.sin(t * 3.1);
-    g.addColorStop(0, `rgba(255,140,60,${0.32 * fire * flick})`); g.addColorStop(1, 'rgba(255,140,60,0)');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    const fg = sky.createRadialGradient(fx, H * 0.95, 0, fx, H * 0.95, H * 1.2);
+    fg.addColorStop(0, `rgba(255,140,60,${0.4 * fire * flick})`); fg.addColorStop(1, 'rgba(255,140,60,0)');
+    sky.fillStyle = fg; sky.fillRect(0, 0, W, H);
   }
 
-  // stars
-  const sa = smooth(52, 84, cam.y);
-  if (sa > 0) {
-    const kx = F * 0.55, span = TAU * kx;
-    ctx.fillStyle = '#fff';
-    for (const s of stars) {
-      let x = ((s.az - cam.phi) * kx) % span; if (x < 0) x += span;
-      if (x > W) continue;
-      const y = s.el * H * 1.1 - (cam.y - 90) * 1.5;
-      const a = sa * s.m * (0.6 + 0.4 * Math.sin(t * 2 + s.ph));
-      ctx.globalAlpha = a;
-      const z = s.m > 0.93 ? 2.2 : 1.2;
-      ctx.fillRect(x, y, z, z);
-    }
-    ctx.globalAlpha = 1;
-  }
+  // haze over the far distance (backdrop is "infinitely" far)
+  const far = 1 - Math.exp(-at.k * 70);
+  sky.globalAlpha = far * 0.9; sky.fillStyle = css(at.haze); sky.fillRect(0, 0, W, H); sky.globalAlpha = 1;
 
-  // floor + tree skirt — fades out as the room dissolves
+  // floor + tree skirt — fades as the room dissolves
   const fa = 1 - smooth(10, 45, cam.y);
   if (fa > 0) {
-    ctx.globalAlpha = fa;
     const fy = cam.hzPx + cam.y * F / 220;
-    const g = ctx.createLinearGradient(0, fy, 0, H);
-    g.addColorStop(0, '#1c0d07'); g.addColorStop(1, '#2e160b');
-    ctx.fillStyle = g; ctx.fillRect(0, fy, W, H - fy);
-    ctx.fillStyle = '#4a0d12';
-    ctx.beginPath();
+    const fg = sky.createLinearGradient(0, fy, 0, H);
+    fg.addColorStop(0, css(mix3([0.11, 0.05, 0.03], at.haze, 0.55))); fg.addColorStop(1, '#2a1409');
+    sky.globalAlpha = fa; sky.fillStyle = fg; sky.fillRect(0, fy, W, H - fy);
+    sky.fillStyle = '#4a0d12';
+    sky.beginPath();
+    const tmp = {};
     for (let i = 0; i <= 64; i++) {
       const a = i / 64 * TAU, r = 10 + Math.sin(a * 9) * 0.6;
       if (!project(tmp, Math.cos(a) * r, 0.02, Math.sin(a) * r)) continue;
-      i ? ctx.lineTo(tmp.sx, tmp.sy) : ctx.moveTo(tmp.sx, tmp.sy);
+      i ? sky.lineTo(tmp.sx, tmp.sy) : sky.moveTo(tmp.sx, tmp.sy);
     }
-    ctx.fill();
-    ctx.globalAlpha = 1;
-  }
-}
-function fog(alpha) {
-  ctx.globalAlpha = alpha; ctx.fillStyle = bgGrad; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1;
-}
-
-// ---------------------------------------------------------------- drawing things
-function drawTrunk() {
-  const s = F / cam.R;
-  const yTop = Math.min(TREE_H, cam.y + cam.hzPx / s + 2);
-  const yBot = Math.max(0, cam.y - (H - cam.hzPx) / s - 2);
-  if (yTop <= yBot) return;
-  const sy = y => cam.hzPx - (y - cam.y) * s;
-  const wMax = trunkR(yBot) * s;
-  const g = ctx.createLinearGradient(W / 2 - wMax, 0, W / 2 + wMax, 0);
-  g.addColorStop(0, '#120a06'); g.addColorStop(0.35, '#3d2414'); g.addColorStop(0.55, '#2c190e'); g.addColorStop(1, '#0a0503');
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  const N = 24;
-  for (let i = 0; i <= N; i++) { const y = lerp(yBot, yTop, i / N); ctx.lineTo(W / 2 - trunkR(y) * s, sy(y)); }
-  for (let i = N; i >= 0; i--) { const y = lerp(yBot, yTop, i / N); ctx.lineTo(W / 2 + trunkR(y) * s, sy(y)); }
-  ctx.fill();
-}
-
-function drawSticks() {
-  ctx.strokeStyle = '#1e120a'; ctx.lineCap = 'round';
-  const A = {}, B = {};
-  for (const k of sticks) {
-    if (!project(A, k.ax, k.ay, k.az) || !project(B, k.bx, k.by, k.bz)) continue;
-    // only sticks behind the trunk here; front ones are cheap enough to skip in the blockout
-    if ((A.d + B.d) / 2 < cam.R) continue;
-    ctx.lineWidth = k.w * (A.s + B.s) / 2;
-    ctx.beginPath(); ctx.moveTo(A.sx, A.sy); ctx.lineTo(B.sx, B.sy); ctx.stroke();
+    sky.fill();
+    sky.globalAlpha = 1;
   }
 }
 
-const nearFade = d => smooth(NEAR, NEAR * 3.5, d);
-
-function drawBlob(o) {
-  const sz = o.size * o.s;
-  if (sz > H * 3) return;
-  // seen from below = dark underside; right in your face = silhouette
-  const elev = (o.y - cam.y) / o.d;
-  const shade = o.d < 5 ? 0 : elev > 0.35 ? (elev > 0.8 ? 0 : 1) : o.shade;
-  const spr = NEEDLES[shade][o.snowy][o.v];
-  ctx.globalAlpha = nearFade(o.d);
-  const k = sz / SS;
-  ctx.setTransform(DPR * k * o.flip, 0, 0, DPR * k, DPR * o.sx, DPR * o.sy);
-  ctx.drawImage(spr, -SS / 2, -SS / 2);
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx.globalAlpha = 1;
-}
-
-function drawLight(o, t) {
-  const tw = 0.55 + 0.45 * Math.sin(t * o.sp + o.ph);
-  const sz = (0.9 + tw * 0.7) * o.s;
-  ctx.globalCompositeOperation = 'lighter';
-  ctx.globalAlpha = nearFade(o.d) * (0.5 + 0.5 * tw);
-  const spr = (o.cold ? GLOW_COLD : GLOW_WARM)[o.c];
-  ctx.drawImage(spr, o.sx - sz / 2, o.sy - sz / 2, sz, sz);
-  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
-}
-
-function drawHanger(o, t, dt) {
-  const s = o.s;
-  const act = o.act >= 0 ? o.act : -1;
-  // swing: idle sway + hover wobble + click spin
-  const swing = Math.sin(t * 1.3 + o.sw) * 0.06 + Math.sin(t * 7) * 0.18 * o.h + (act >= 0 ? Math.sin(act * 14) * 0.5 * (1 - act / 0.7) : 0);
-  const L = (o.len + o.rad) * s;
-  const cx = o.sx + Math.sin(swing) * L, cy = o.sy + Math.cos(swing) * L;
-  const r = o.rad * s * (1 + 0.08 * o.h);
-  ctx.globalAlpha = nearFade(o.d);
-  // string
-  ctx.strokeStyle = 'rgba(220,200,150,.6)'; ctx.lineWidth = Math.max(0.6, 0.04 * s);
-  ctx.beginPath(); ctx.moveTo(o.sx, o.sy);
-  ctx.lineTo(o.sx + Math.sin(swing) * o.len * s, o.sy + Math.cos(swing) * o.len * s); ctx.stroke();
-
-  if (o.kind === 'ball') {
-    const spin = act >= 0 ? Math.cos(act * 30) : 1;
-    // cap
-    ctx.fillStyle = '#b89b52';
-    ctx.save(); ctx.translate(cx, cy); ctx.rotate(-swing);
-    ctx.fillRect(-r * 0.22, -r * 1.12, r * 0.44, r * 0.25);
-    ctx.scale(spin, 1);
-    ctx.drawImage((o.deco ? BALLS : BALLSB)[o.col], -r, -r, r * 2, r * 2);
-    if (o.h > 0.01) { // hover: a little glint sweeps across
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = o.h * 0.35;
-      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill();
-      ctx.globalCompositeOperation = 'source-over';
-    }
-    ctx.restore();
-    if (!o.deco) hits.push({ o, x: cx, y: cy, r: r * 1.1 });
-  } else { // candy cane, hook at top
-    const len = o.rad * s;
-    ctx.save(); ctx.translate(o.sx + Math.sin(swing) * o.len * s, o.sy + Math.cos(swing) * o.len * s); ctx.rotate(-swing);
-    const hookR = len * 0.18;
-    const path = () => { ctx.beginPath(); ctx.arc(-hookR, hookR, hookR, 0, Math.PI, true); ctx.moveTo(0, hookR); ctx.lineTo(0, len); };
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = '#f4efe6'; ctx.lineWidth = len * 0.11 * (1 + 0.15 * o.h); path(); ctx.stroke();
-    ctx.strokeStyle = '#c4142c'; ctx.setLineDash([len * 0.07, len * 0.07]); ctx.lineCap = 'butt'; path(); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.restore();
-    if (!o.deco) hits.push({ o, x: o.sx, y: o.sy + len * 0.55, r: len * 0.5 });
-  }
-  ctx.globalAlpha = 1;
-}
-
-function drawCreature(o, t) {
-  const r = o.rad * o.s;
-  const act = o.act;
-  const hop = act >= 0 ? Math.sin(Math.min(1, act / 0.6) * Math.PI) * r * 1.4 : 0;
-  const peek = o.h * r * 0.25 + Math.sin(t * 2 + o.sw) * r * 0.03;
-  const x = o.sx, y = o.sy - hop - peek;
-  ctx.globalAlpha = nearFade(o.d);
-  ctx.fillStyle = o.fur;
-  // tail
-  ctx.strokeStyle = o.fur; ctx.lineWidth = r * 0.12; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(x + r * 0.7, y + r * 0.3);
-  ctx.quadraticCurveTo(x + r * 1.6, y + r * 0.2 + Math.sin(t * 3) * r * 0.2, x + r * 1.3, y - r * 0.5); ctx.stroke();
-  // body + head
-  ctx.beginPath(); ctx.ellipse(x, y + r * 0.2, r * 0.85, r * 0.65, 0, 0, TAU); ctx.fill();
-  ctx.beginPath(); ctx.arc(x - r * 0.2, y - r * 0.45, r * 0.55, 0, TAU); ctx.fill();
-  // ears (pop up on hover)
-  const ear = 1 + o.h * 0.3;
-  for (const ex of [-0.6, 0.15]) { ctx.beginPath(); ctx.arc(x + ex * r, y - r * 0.95 - o.h * r * 0.1, r * 0.25 * ear, 0, TAU); ctx.fill(); }
-  // eyes follow the pointer
-  const blink = (Math.sin(t * 0.9 + o.sw * 3) > 0.985) ? 0.15 : 1;
-  for (const ex of [-0.42, 0.02]) {
-    const ecx = x + ex * r, ecy = y - r * 0.5, er = r * 0.15;
-    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(ecx, ecy, er, er * blink, 0, 0, TAU); ctx.fill();
-    let dx = px - ecx, dy = py - ecy; const dl = Math.hypot(dx, dy) || 1;
-    if (!pointerIn) { dx = 0; dy = 0; }
-    ctx.fillStyle = '#000'; ctx.beginPath();
-    ctx.ellipse(ecx + dx / dl * er * 0.45, ecy + dy / dl * er * 0.45, er * 0.55, er * 0.55 * blink, 0, 0, TAU); ctx.fill();
-  }
-  ctx.fillStyle = '#e88'; ctx.beginPath(); ctx.arc(x - r * 0.72, y - r * 0.32, r * 0.08, 0, TAU); ctx.fill();
-  ctx.globalAlpha = 1;
-  hits.push({ o, x, y: y - r * 0.1, r: r * 1.1 });
-}
-
-function drawGift(o, t) {
-  const s = o.s, w = o.w * s, h = o.hh * s;
-  const act = o.act;
-  const jig = o.h * Math.sin(t * 22) * 0.04;
-  const hop = act >= 0 ? Math.sin(Math.min(1, act / 0.35) * Math.PI) * h * 0.25 : 0;
-  const lid = act >= 0 ? Math.min(1, act / 0.45) : 0;
-  ctx.globalAlpha = nearFade(o.d);
-  // shadow
-  ctx.fillStyle = 'rgba(0,0,0,.45)';
-  ctx.beginPath(); ctx.ellipse(o.sx, o.sy, w * 0.62, w * 0.12, 0, 0, TAU); ctx.fill();
-  ctx.save();
-  ctx.translate(o.sx, o.sy - hop); ctx.rotate(jig);
-  const sq = 1 + o.h * 0.05;
-  ctx.scale(1 / Math.sqrt(sq), sq);
-  const [box, rib] = o.col;
-  ctx.fillStyle = box; ctx.fillRect(-w / 2, -h, w, h);
-  ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.fillRect(w * 0.3, -h, w * 0.2, h);            // fake side shading
-  if (o.h > 0.01) { ctx.fillStyle = `rgba(255,255,255,${o.h * 0.12})`; ctx.fillRect(-w / 2, -h, w, h); }
-  ctx.fillStyle = rib; ctx.fillRect(-w * 0.07, -h, w * 0.14, h);
-  // lid
-  const lh = h * 0.18, ly = -h - lh - lid * h * 1.2, lr = lid * 0.5;
-  ctx.save(); ctx.translate(0, ly + lh / 2); ctx.rotate(-lr);
-  ctx.fillStyle = box; ctx.fillRect(-w * 0.54, -lh / 2, w * 1.08, lh);
-  ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(-w * 0.54, lh * 0.2, w * 1.08, lh * 0.3);
-  ctx.fillStyle = rib; ctx.fillRect(-w * 0.07, -lh / 2, w * 0.14, lh);
-  // bow
-  ctx.beginPath(); ctx.ellipse(-w * 0.14, -lh / 2 - w * 0.06, w * 0.14, w * 0.08, -0.4, 0, TAU);
-  ctx.ellipse(w * 0.14, -lh / 2 - w * 0.06, w * 0.14, w * 0.08, 0.4, 0, TAU); ctx.fill();
-  ctx.restore();
-  if (lid > 0) { // light spilling out
-    ctx.globalCompositeOperation = 'lighter';
-    const g = ctx.createRadialGradient(0, -h, 0, 0, -h, w);
-    g.addColorStop(0, `rgba(255,230,160,${lid})`); g.addColorStop(1, 'rgba(255,230,160,0)');
-    ctx.fillStyle = g; ctx.fillRect(-w, -h * 2.2, w * 2, h * 1.4);
-    ctx.globalCompositeOperation = 'source-over';
-  }
-  ctx.restore();
-  ctx.globalAlpha = 1;
-  if (!o.deco) hits.push({ o, x: o.sx, y: o.sy - h * 0.55, r: Math.max(w, h) * 0.6 });
-}
-
-function drawStar(o, t) {
-  const r = o.rad * o.s * (1 + 0.06 * o.h + 0.03 * Math.sin(t * 2));
-  const burst = o.act >= 0 ? o.act : -1;
-  ctx.globalCompositeOperation = 'lighter';
-  const gr = (2.6 + o.h * 0.8) * r;
-  const g = ctx.createRadialGradient(o.sx, o.sy, 0, o.sx, o.sy, gr);
-  g.addColorStop(0, 'rgba(255,240,190,.9)'); g.addColorStop(0.25, 'rgba(255,210,120,.35)'); g.addColorStop(1, 'rgba(255,200,100,0)');
-  ctx.fillStyle = g; ctx.fillRect(o.sx - gr, o.sy - gr, gr * 2, gr * 2);
-  // rays
-  ctx.save(); ctx.translate(o.sx, o.sy); ctx.rotate(t * 0.15);
-  for (let i = 0; i < 12; i++) {
-    ctx.rotate(TAU / 12);
-    const L = r * (i % 2 ? 2.2 : 3.4) * (1 + (burst >= 0 ? burst * 3 : 0));
-    ctx.fillStyle = `rgba(255,235,180,${burst >= 0 ? 0.25 * (1 - burst / 0.7) + 0.1 : 0.12})`;
-    ctx.beginPath(); ctx.moveTo(0, -r * 0.1); ctx.lineTo(L, 0); ctx.lineTo(0, r * 0.1); ctx.fill();
-  }
-  ctx.restore();
-  ctx.globalCompositeOperation = 'source-over';
-  // the star itself
-  ctx.save(); ctx.translate(o.sx, o.sy); ctx.rotate(Math.sin(t * 0.7) * 0.05);
-  ctx.fillStyle = '#ffd56a'; ctx.strokeStyle = '#fff6d0'; ctx.lineWidth = r * 0.05;
-  ctx.beginPath();
-  for (let i = 0; i < 10; i++) {
-    const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.42 : r;
-    ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
-  }
-  ctx.closePath(); ctx.fill(); ctx.stroke();
-  ctx.restore();
-  hits.push({ o, x: o.sx, y: o.sy, r: r * 1.1 });
-}
-
-function drawSnow(t) {
-  const a = smooth(70, 90, cam.y);
-  if (a <= 0) return;
-  ctx.fillStyle = '#fff';
-  for (const f of snow) {
-    let x = (f.x * W + Math.sin(t * 0.6 + f.ph) * 25 * f.z - cam.phi * F * 0.5 * f.z) % W; if (x < 0) x += W;
-    let y = (f.y * H + t * 28 * f.z + cam.y * F * 0.04 * f.z) % H; if (y < 0) y += H;
-    ctx.globalAlpha = a * f.z * 0.9;
-    const sz = 1 + f.z * 2.2;
-    ctx.beginPath(); ctx.arc(x, y, sz, 0, TAU); ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-}
-
-// ---------------------------------------------------------------- hit testing
+// ================================================================ EMITTERS
+// Each visible object pushes one or more sprite instances.
 let hits = [];
+function emit(o, t) {
+  switch (o.kind) {
+    case 0: push(o.x, o.y, o.z, 0, o.size * o.flip * NEEDLE_K, o.size * NEEDLE_K, 0.5, 0.5, o.uv, o.tr, o.tg, o.tb, 1, 0, 1, 1, 2.2); break;
+
+    case 1: {
+      const tw = 0.55 + 0.45 * Math.sin(t * o.sp + o.ph), sz = 0.7 + tw * 0.6;
+      push(o.x, o.y, o.z, 0, sz, sz, 0.5, 0.5, UV.glow, o.col[0], o.col[1], o.col[2], 0.55 + 0.45 * tw, 1, 0, 0.4, 1.0);
+      break;
+    }
+    case 2: { // ornament ball: anchor is the hook, sprite hangs below
+      const act = o.act;
+      const swing = Math.sin(t * 1.3 + o.sw) * 0.06 + Math.sin(t * 7) * 0.2 * o.h + (act >= 0 ? Math.sin(act * 14) * 0.5 * (1 - act / 0.75) : 0);
+      const sc = 1 + 0.1 * o.h, spin = act >= 0 ? Math.cos(act * 30) : 1, br = 1 + 0.35 * o.h;
+      const w = 2 * o.rad * sc, h = w * BALL_H / BALL_W;
+      push(o.x, o.y, o.z, swing, w * spin, h, 0.5, 0, UV.ball[o.banded][o.col], br, br, br, 1, 0, 0.65, 1, 2.2);
+      // a glint that twinkles on the ball
+      const gl8 = Math.pow(0.5 + 0.5 * Math.sin(t * 2.2 + o.sw * 5), 12) + o.h * 0.6;
+      if (gl8 > 0.02) {
+        const p = bOff(o.x, o.y, o.z, -w * 0.18, h - w * 0.68, swing);
+        push(p[0], p[1], p[2], t, w * 0.7, w * 0.7, 0.5, 0.5, UV.rays, 1, 0.97, 0.9, gl8, 1, 0, 0.5, 2.2);
+      }
+      if (!o.deco) hits.push({ o, x: o.sx - Math.sin(swing) * (h - w / 2) * o.s, y: o.sy + Math.cos(swing) * (h - w / 2) * o.s, r: w * 0.6 * o.s });
+      break;
+    }
+    case 3: { // candy cane: anchor near the top of the hook
+      const act = o.act;
+      const swing = Math.sin(t * 1.1 + o.sw) * 0.05 + Math.sin(t * 7) * 0.18 * o.h + (act >= 0 ? Math.sin(act * 14) * 0.5 * (1 - act / 0.75) : 0);
+      const h = o.len * (1 + 0.08 * o.h), w = h / 3, br = 1 + 0.3 * o.h;
+      push(o.x, o.y, o.z, swing, w, h, 0.36, 0.04, UV.cane, br, br, br, 1, 0, 0.65, 1, 2.2);
+      if (!o.deco) hits.push({ o, x: o.sx - Math.sin(swing) * h * 0.5 * o.s, y: o.sy + h * 0.5 * o.s, r: h * 0.45 * o.s });
+      break;
+    }
+    case 4: { // critter sitting on a branch; eyes follow the pointer
+      const r = o.rad, act = o.act;
+      const hop = act >= 0 ? Math.sin(Math.min(1, act / 0.6) * Math.PI) * r * 1.4 : 0;
+      const lift = hop + o.h * r * 0.2 + Math.sin(t * 2 + o.sw) * r * 0.03;
+      const w = r * 2.4, sq = 1 + o.h * 0.06;
+      const y = o.y + lift;
+      push(o.x, y, o.z, 0, w / sq, w * sq, 0.5, 1, UV.critter[o.fur], 1, 1, 1, 1, 0, 0.6, 1, 2.2);
+      const blink = Math.sin(t * 0.9 + o.sw * 3) > 0.985 ? 0.15 : 1;
+      for (const [fx, fy] of EYES) {
+        const dx = (fx - 0.5) * w / sq, dy = (fy - 1) * w * sq;
+        const e = [o.x + cam.cos * dx, y - dy, o.z - cam.sin * dx];
+        const er = r * 0.26;
+        push(e[0], e[1], e[2], 0, er, er * blink, 0.5, 0.5, UV.disc, 1, 1, 1, 1, 0, 0.5, 1, 2.2);
+        let ex = 0, ey = 0;
+        if (pointerIn) {
+          const esx = o.sx + dx * o.s, esy = o.sy - (lift - dy) * o.s;
+          const vx = px - esx, vy = py - esy, l = Math.hypot(vx, vy) || 1;
+          ex = vx / l * er * 0.22; ey = vy / l * er * 0.22;
+        }
+        push(e[0] + cam.cos * ex, e[1] - ey, e[2] - cam.sin * ex, 0, er * 0.5, er * 0.5 * blink, 0.5, 0.5, UV.disc, 0, 0, 0, 1, 0, 0, 1, 2.2);
+      }
+      hits.push({ o, x: o.sx, y: o.sy - (lift + w * 0.45) * o.s, r: w * 0.5 * o.s });
+      break;
+    }
+    case 5: { // gift
+      const act = o.act, jig = o.h * Math.sin(t * 22) * 0.04;
+      const hop = act >= 0 ? Math.sin(Math.min(1, act / 0.35) * Math.PI) * o.hh * 0.25 : 0;
+      const lid = act >= 0 ? Math.min(1, act / 0.45) : 0;
+      const sq = 1 + o.h * 0.05, br = 1 + o.h * 0.2;
+      const w = o.w / Math.sqrt(sq), h = o.hh * sq;
+      push(o.x, 0.01, o.z, 0, o.w * 1.3, o.w * 0.3, 0.5, 0.5, UV.shadow, 1, 1, 1, 0.6, 0, 0, 1, 2.2);
+      push(o.x, hop, o.z, jig, w, h, 0.5, 1, UV.box[o.ci], br, br, br, 1, 0, 0.8, 1, 2.2);
+      push(o.x, hop + h + lid * h * 1.2, o.z, jig - lid * 0.5, w * 1.08, w * 0.54, 0.5, 1, UV.lid[o.ci], br, br, br, 1, 0, 0.8, 1, 2.2);
+      if (lid > 0) push(o.x, h, o.z, 0, w * 3, w * 3, 0.5, 0.6, UV.glow, 1, 0.85, 0.55, lid, 1, 0, 0.3, 1.0);
+      if (!o.deco) hits.push({ o, x: o.sx, y: o.sy - h * 0.55 * o.s, r: Math.max(w, h) * 0.6 * o.s });
+      break;
+    }
+    case 6: { // star
+      const r = o.rad * (1 + 0.06 * o.h + 0.03 * Math.sin(t * 2));
+      const burst = o.act >= 0 ? o.act / 0.75 : 0;
+      push(o.x, o.y, o.z, 0, r * 9, r * 9, 0.5, 0.5, UV.glow, 1, 0.85, 0.55, 0.55 + o.h * 0.3, 1, 0, 0.15, 2);
+      push(o.x, o.y, o.z, t * 0.12, r * 7 * (1 + burst * 2), r * 7 * (1 + burst * 2), 0.5, 0.5, UV.rays, 1, 0.9, 0.7, 0.5 + o.h * 0.3 + burst * 0.5, 1, 0, 0.15, 2);
+      push(o.x, o.y, o.z, -t * 0.07, r * 4.5, r * 4.5, 0.5, 0.5, UV.rays, 1, 0.95, 0.85, 0.5, 1, 0, 0.15, 2);
+      push(o.x, o.y, o.z, Math.sin(t * 0.7) * 0.05, r * 2.2, r * 2.2, 0.5, 0.5, UV.star, 1.2, 1.15, 1.05, 1, 0, 0, 0.15, 2);
+      hits.push({ o, x: o.sx, y: o.sy, r: r * 1.2 * o.s });
+      break;
+    }
+    case 7: push(o.x + Math.sin(t * 0.05 + o.x) * 1.5, o.y, o.z, o.rot, o.size * 1.6, o.size, 0.5, 0.5, UV.puff[o.v], o.col[0], o.col[1], o.col[2], o.a, 0, 0, 0.45, 8); break;
+
+    case 8: {
+      const a = o.a * (1 - smooth(15, 40, cam.y)) * (0.8 + 0.2 * Math.sin(t * 0.4 + o.ph));
+      if (a > 0.002) push(o.x, o.y, o.z, 0.38, o.w, o.h, 0.5, 0, UV.shaft, 1, 0.82, 0.55, a, 1, 0, 0.25, 6);
+      break;
+    }
+    case 9: push(0, 0, 0, 0, trunkR(0) * 2, 101.5, 0.5, 1, UV.trunk, 1, 1, 1, 1, 0, 1, 1, 2.2); break;
+
+    case 10: {
+      const bk = 1 + Math.max(0, 3.5 - o.d) * 1.3, sz = o.sz * bk, a = o.a / (bk * bk) * (bk > 1 ? 1.6 : 1);
+      if (o.snow) push(o.x, o.y, o.z, 0, sz * 1.7, sz * 1.7, 0.5, 0.5, bk > 1.4 ? UV.glow : UV.flake, 0.88, 0.92, 1, Math.min(1, a), 0, 0, 0.55, -1.0);
+      else push(o.x, o.y, o.z, 0, sz, sz, 0.5, 0.5, UV.glow, 1, 0.8, 0.5, Math.min(1, a), 1, 0, 0.5, -1.0);
+      break;
+    }
+  }
+}
+
+// particles: positions are generated in camera space so they always surround you
+function updateParticles(list, t, alpha, out) {
+  if (alpha < 0.01) return;
+  const fx = -cam.sin, fz = -cam.cos;          // forward
+  const rxv = cam.cos, rzv = -cam.sin;         // right
+  for (const p of list) {
+    const d = 0.7 + 46 * Math.pow(p.w, 1.7);
+    const spanX = d * W / F * 1.2, spanY = d * H / F * 1.4;
+    const fall = p.snow ? 1.6 + p.sz * 6 : -0.08;
+    const sway = Math.sin(t * (p.snow ? 0.9 : 0.4) + p.ph) * (p.snow ? 0.5 : 0.3);
+    let lx = ((p.u * spanX - cam.phi * cam.R * 0.9 + sway) % spanX + spanX) % spanX - spanX / 2;
+    let ly = ((p.v * spanY - cam.y - t * fall) % spanY + spanY) % spanY - spanY / 2;
+    p.x = cam.x + fx * d + rxv * lx; p.y = cam.y + ly; p.z = cam.z + fz * d + rzv * lx;
+    p.d = d;
+    p.a = alpha * (p.snow ? 0.85 : 0.35 + 0.65 * Math.pow(0.5 + 0.5 * Math.sin(t * 2 + p.ph * 7), 3));
+    out.push(p);
+  }
+}
+
+// ================================================================ HIT TEST
 function hitTest() {
+  // nearest first: a dense needle clump in front blocks what's behind it
   for (let i = hits.length - 1; i >= 0; i--) {
     const h = hits[i];
     if ((px - h.x) ** 2 + (py - h.y) ** 2 < h.r * h.r) return h.block ? null : h.o;
@@ -634,15 +826,15 @@ function hitTest() {
   return null;
 }
 
-// ---------------------------------------------------------------- frame
-const FOG = [[38, 0.36], [27, 0.28], [17, 0.18]];
+// ================================================================ FRAME
 const vis = [];
-let last = performance.now();
+let last = performance.now(), msAvg = 0;
 function frame(now) {
+  const t0 = performance.now();
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   const t = now / 1000;
 
-  pNow += (pTarget - pNow) * (1 - Math.exp(-dt * 5));
+  pNow += (pTarget - pNow) * (1 - Math.exp(-dt * 4.5));
   mxS += (mx - mxS) * (1 - Math.exp(-dt * 3));
   myS += (my - myS) * (1 - Math.exp(-dt * 3));
 
@@ -652,42 +844,46 @@ function frame(now) {
   cam.sin = Math.sin(cam.phi); cam.cos = Math.cos(cam.phi);
   cam.x = cam.R * cam.sin; cam.z = cam.R * cam.cos;
   cam.hzPx = c.hz * H;
+  const at = atmosAt(cam.y);
 
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  drawBackground(t);
+  drawSky(t, at);
 
-  // project + cull
+  // ---- cull + sort
   vis.length = 0;
-  const yMin = cam.y - 60, yMax = cam.y + 60;
+  const yMin = cam.y - 70, yMax = cam.y + 70;
   for (const o of world) {
-    if (o.y < yMin || o.y > yMax) continue;
+    if (o.y < yMin - 40 || o.y > yMax) continue;
     if (!project(o, o.x, o.y, o.z)) continue;
-    const pad = (o.size || o.rad * 3 || 6) * o.s;
-    if (o.sx < -pad || o.sx > W + pad || o.sy < -pad || o.sy > H + pad * 1.5) continue;
+    const ext = (o.size ? o.size * 1.6 : o.h && o.kind === 8 ? o.h : 8) * o.s;
+    if (o.kind === 0 && ext < 1.5) continue;
+    if (o.sx < -ext || o.sx > W + ext || o.sy < -ext - 20 || o.sy > H + ext) continue;
     vis.push(o);
   }
   trunk.d = cam.R; vis.push(trunk);
+  const snowA = smooth(40, 68, cam.y);
+  updateParticles(DUST, t, 1 - smooth(30, 60, cam.y), vis);
+  updateParticles(SNOW, t, snowA, vis);
   vis.sort((a, b) => b.d - a.d);
 
-  hits = [];
-  let fi = 0, anyHit = false;
-  drawSticks();
+  // ---- build instances
+  N = 0; hits = [];
   for (const o of vis) {
-    while (fi < FOG.length && o.d < FOG[fi][0]) { fog(FOG[fi][1]); fi++; }
-    switch (o.type) {
-      case 0: drawBlob(o); if (anyHit && o.d < 30) hits.push({ block: true, x: o.sx, y: o.sy, r: o.size * o.s * 0.22 }); break;
-      case 1: drawLight(o, t); break;
-      case 2: drawHanger(o, t, dt); break;
-      case 3: drawCreature(o, t); break;
-      case 4: drawGift(o, t); break;
-      case 5: drawStar(o, t); break;
-      case 6: drawTrunk(); break;
-    }
-    if (o.type >= 2 && o.type <= 5) anyHit = hits.length > 0;
+    emit(o, t);
+    if (o.kind === 0 && hits.length && o.d < 25) hits.push({ block: true, x: o.sx, y: o.sy, r: o.size * o.s * 0.2 * smooth(NEAR, 2.2, o.d) });
   }
-  drawSnow(t);
 
-  // hover
+  // ---- draw
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.uniform3f(U.u_cam, cam.x, cam.y, cam.z);
+  gl.uniform2f(U.u_sc, cam.sin, cam.cos);
+  gl.uniform1f(U.u_F, F); gl.uniform1f(U.u_hz, cam.hzPx);
+  gl.uniform2f(U.u_vp, W, H);
+  gl.uniform3fv(U.u_haze, at.haze); gl.uniform1f(U.u_k, at.k); gl.uniform1f(U.u_camY, cam.y);
+  gl.bindBuffer(gl.ARRAY_BUFFER, ibuf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst, 0, N * STRIDE);
+  gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, N);
+
+  // ---- hover / click animation
   hovered = pointerIn && !opening ? hitTest() : null;
   cvs.style.cursor = hovered ? 'pointer' : '';
   for (const o of interactive) {
@@ -697,6 +893,8 @@ function frame(now) {
       if (o.act > 0.75) { o.act = -1; if (opening === o) { opening = null; openPage(o.page); } }
     }
   }
+  msAvg = msAvg * 0.95 + (performance.now() - t0) * 0.05;
+  window.__stats = { ms: msAvg, instances: N, p: pNow, y: cam.y, R: cam.R, hz: cam.hzPx / H };
   requestAnimationFrame(frame);
 }
 pTarget = pNow = scrollP();
