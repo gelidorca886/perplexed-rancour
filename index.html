@@ -1,3 +1,26 @@
 <!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
-<title></title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tree</title>
+<style>
+  html, body { margin: 0; background: #000; }
+  #scene { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #track { height: 1400vh; }              /* scroll length = how long the climb takes */
+  #page {
+    position: fixed; inset: 0; display: none;
+    background: rgba(0,0,0,.82); color: #fff;
+    font: 14px monospace; align-items: center; justify-content: center;
+    cursor: pointer;
+  }
+  #page.open { display: flex; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="track"></div>
+<div id="page"><div><span id="page-id"></span><br><br>(placeholder page — click to close)</div></div>
+<script src="tree.js"></script>
+</body>
+</html>
