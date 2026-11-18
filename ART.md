@@ -25,6 +25,8 @@ placeholder drawn in code is used.
   (`snowcap-2` goes over `needles-2`). Draw them on top of your needle drawing,
   then save just the snow layer.
 - **`fx/*`** are drawn white and coloured in code. Keep them white.
+- **Bulbs** stand on their socket (bottom edge). Draw them glowing; the halo
+  and the coloured spill of light are added in code.
 - **Hanging things** (ornaments, canes, lantern) hang from the point given in the
   notes, so put the hook/string there.
 - **Creatures** are drawn without eyes. The eyes are added in code at the spots in
@@ -53,12 +55,36 @@ placeholder drawn in code is used.
 | `fx/puff-1` | 128×96 | mist / cloud puff, white, very soft edges |
 | `fx/puff-2` | 128×96 | mist / cloud puff, white, very soft edges |
 | `fx/rays` | 256×256 | star burst rays, white |
-| `deco/ball-0` | 96×150 | decorative ornament; hook point = top centre |
-| `deco/ball-1` | 96×150 | decorative ornament; hook point = top centre |
-| `deco/ball-2` | 96×150 | decorative ornament; hook point = top centre |
-| `deco/ball-3` | 96×150 | decorative ornament; hook point = top centre |
-| `deco/ball-4` | 96×150 | decorative ornament; hook point = top centre |
-| `deco/ball-5` | 96×150 | decorative ornament; hook point = top centre |
+| `deco/bulb-0` | 48×80 | C9 light bulb, glass up, socket at the bottom edge (that's where it attaches); halo is added in code |
+| `deco/bulb-1` | 48×80 | C9 light bulb, glass up, socket at the bottom edge (that's where it attaches); halo is added in code |
+| `deco/bulb-2` | 48×80 | C9 light bulb, glass up, socket at the bottom edge (that's where it attaches); halo is added in code |
+| `deco/bulb-3` | 48×80 | C9 light bulb, glass up, socket at the bottom edge (that's where it attaches); halo is added in code |
+| `deco/bulb-4` | 48×80 | C9 light bulb, glass up, socket at the bottom edge (that's where it attaches); halo is added in code |
+| `deco/bulb-5` | 48×80 | C9 light bulb, glass up, socket at the bottom edge (that's where it attaches); halo is added in code |
+| `deco/orn-ball-0` | 96×150 | decorative ball ornament; hook point = top centre |
+| `deco/orn-ball-1` | 96×150 | decorative ball ornament; hook point = top centre |
+| `deco/orn-ball-2` | 96×150 | decorative ball ornament; hook point = top centre |
+| `deco/orn-ball-3` | 96×150 | decorative ball ornament; hook point = top centre |
+| `deco/orn-ball-4` | 96×150 | decorative ball ornament; hook point = top centre |
+| `deco/orn-ball-5` | 96×150 | decorative ball ornament; hook point = top centre |
+| `deco/orn-drop-0` | 96×150 | decorative drop ornament; hook point = top centre |
+| `deco/orn-drop-1` | 96×150 | decorative drop ornament; hook point = top centre |
+| `deco/orn-drop-2` | 96×150 | decorative drop ornament; hook point = top centre |
+| `deco/orn-drop-3` | 96×150 | decorative drop ornament; hook point = top centre |
+| `deco/orn-finial-0` | 96×150 | decorative finial ornament; hook point = top centre |
+| `deco/orn-finial-1` | 96×150 | decorative finial ornament; hook point = top centre |
+| `deco/orn-finial-2` | 96×150 | decorative finial ornament; hook point = top centre |
+| `deco/orn-finial-3` | 96×150 | decorative finial ornament; hook point = top centre |
+| `deco/orn-bell-0` | 96×150 | decorative bell ornament; hook point = top centre |
+| `deco/orn-bell-1` | 96×150 | decorative bell ornament; hook point = top centre |
+| `deco/orn-bell-2` | 96×150 | decorative bell ornament; hook point = top centre |
+| `deco/orn-bell-3` | 96×150 | decorative bell ornament; hook point = top centre |
+| `deco/orn-onion-0` | 96×150 | decorative onion ornament; hook point = top centre |
+| `deco/orn-onion-1` | 96×150 | decorative onion ornament; hook point = top centre |
+| `deco/orn-onion-2` | 96×150 | decorative onion ornament; hook point = top centre |
+| `deco/orn-onion-3` | 96×150 | decorative onion ornament; hook point = top centre |
+| `deco/orn-icicle-0` | 96×150 | decorative icicle ornament; hook point = top centre |
+| `deco/orn-icicle-1` | 96×150 | decorative icicle ornament; hook point = top centre |
 | `link/ornament-1` | 96×150 | clickable ornament; hook point = top centre |
 | `link/ornament-2` | 96×150 | clickable ornament; hook point = top centre |
 | `link/ornament-3` | 96×150 | clickable ornament; hook point = top centre |
