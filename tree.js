@@ -191,85 +191,69 @@ function radial(g, cx, cy, r, stops) {
 // --- tree
 const NEEDLE_K = 1.6;
 const NEEDLE_PAL = ['#1a4a2a', '#22603a', '#2b7446', '#358a52', '#46a062'];
-// Needle clusters: a loose tuft of 4–6 small branchlets reaching out from near the
-// centre, needles along each, gaps between them — not a solid ball.
-const NEEDLE_LIGHT = ['#2c7442', '#368450', '#43985c', '#52aa6a'];
-const NEEDLE_DARK  = ['#11351e', '#164226', '#1c4e2e'];
-const NEEDLE_TIP   = '#68be78';
-function tuftGeom(seed, S) {        // shared by needles + snow so the snow sits on the same twigs
-  const r = rng(seed), arms = [];
-  const n = 4 + ((r() * 3) | 0);
-  for (let i = 0; i < n; i++) {
-    // mostly sideways (left or right) with a droop, the odd one angled up or down
-    const side = i % 2 ? 1 : -1, base = side > 0 ? 0 : Math.PI;
-    const ang = base + side * (r() - 0.35) * 0.9;
-    const len = S * (0.26 + r() * 0.2);
-    const x0 = (r() - 0.5) * S * 0.16, y0 = (r() - 0.5) * S * 0.12;
-    const twigs = [];
-    for (let t = 0.3; t < 0.85; t += 0.22 + r() * 0.1) {
-      const sd = twigs.length % 2 ? 1 : -1;
-      twigs.push({ x: x0 + Math.cos(ang) * len * t, y: y0 + Math.sin(ang) * len * t, ang: ang + sd * (0.6 + r() * 0.3) * (Math.cos(ang) > 0 ? 1 : -1), len: len * (0.32 - t * 0.15) });
-    }
-    arms.push({ x0, y0, ang, len, twigs });
-  }
-  return { r, arms };
+function needleDome(S) { // the top edge of a needle cluster, so snow can sit on it
+  return x => -S * 0.21 * Math.sqrt(Math.max(0, 1 - (x / (S * 0.44)) ** 2)) - S * 0.02;
 }
-function needlesAlong(g, r, x0, y0, ang, len, nl, pass) {
-  for (let s = 0; s < len; s += 2.3) {
-    const x = x0 + Math.cos(ang) * s, y = y0 + Math.sin(ang) * s, k = s / len;
-    for (const sd of [-1, 1]) {
-      const a = ang + sd * (0.75 + r() * 0.35), l = nl * (1 - 0.3 * k) * (pass ? 1 : 1.2) * (0.75 + r() * 0.5);
-      const up = Math.sin(a) < 0;
-      g.strokeStyle = pass === 0 ? NEEDLE_DARK[(r() * 3) | 0] : k > 0.8 ? NEEDLE_TIP : up ? NEEDLE_LIGHT[1 + ((r() * 3) | 0)] : NEEDLE_LIGHT[(r() * 2) | 0];
-      g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l + l * 0.18); g.stroke();
-    }
-  }
-}
-function drawTuft(g, w, h, seed) {
-  const S = w / NEEDLE_K, G = tuftGeom(seed, S);
+function drawNeedles(g, w, h, seed) {
+  const r = rng(seed), S = w / NEEDLE_K;
   g.translate(w / 2, h / 2); g.lineCap = 'round';
-  for (const pass of [0, 1]) {                                     // dark back layer, then lit needles
-    g.lineWidth = pass ? 1.4 : 1.7;
-    for (const A of G.arms) {
-      needlesAlong(g, G.r, A.x0, A.y0, A.ang, A.len, S * 0.1, pass);
-      for (const tw of A.twigs) needlesAlong(g, G.r, tw.x, tw.y, tw.ang, tw.len, S * 0.075, pass);
-    }
-    if (!pass) {
-      g.strokeStyle = '#3a2614'; g.lineWidth = 1.3;
-      for (const A of G.arms) { g.beginPath(); g.moveTo(A.x0, A.y0); g.lineTo(A.x0 + Math.cos(A.ang) * A.len, A.y0 + Math.sin(A.ang) * A.len); g.stroke(); }
-    }
+  g.fillStyle = '#163e24';
+  g.beginPath(); g.ellipse(0, 3, S * 0.27, S * 0.16, 0, 0, TAU); g.fill();
+  const N = 170;
+  for (let i = 0; i < N; i++) {
+    const k = i / N;
+    const a = r() * TAU, rad = Math.pow(r(), 0.55) * S * 0.36;
+    const x = Math.cos(a) * rad * 1.2, y = Math.sin(a) * rad * 0.72 - k * S * 0.06;
+    const ang = Math.atan2(y, x) + (r() - 0.5) * 1.1;
+    const len = S * (0.05 + r() * 0.075);
+    g.strokeStyle = NEEDLE_PAL[Math.min(NEEDLE_PAL.length - 1, Math.floor(k * NEEDLE_PAL.length + r() * 0.8))];
+    g.lineWidth = S * 0.017;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len * 0.6 + len * 0.3); g.stroke();
   }
 }
-function drawTuftSnow(g, w, h, seed) {
-  const S = w / NEEDLE_K, G = tuftGeom(seed, S), r = rng(seed * 7 + 1), lumps = [];
+function drawSnowcap(g, w, h, seed) {
+  const r = rng(seed), S = w / NEEDLE_K, top = needleDome(S);
   g.translate(w / 2, h / 2);
-  for (const A of G.arms) {
-    if (Math.abs(Math.sin(A.ang)) > 0.6) continue;              // snow only settles on the flatter arms
-    let run = 0;
-    for (let t = 0.05; t < 0.95; t += 0.06) {
-      if (run <= 0 && r() < 0.3) run = 2 + ((r() * 5) | 0);
-      if (run-- > 0) lumps.push([A.x0 + Math.cos(A.ang) * A.len * t, A.y0 + Math.sin(A.ang) * A.len * t - S * 0.06, S * (0.035 + r() * 0.04)]);
+  const N = 28, X0 = -S * 0.4, X1 = S * 0.4;
+  const thick = [];
+  for (let i = 0; i <= N; i++) thick.push(S * (0.045 + 0.035 * Math.sin(i * 1.3 + seed) + r() * 0.03));
+  const blanket = () => {
+    g.beginPath();
+    for (let i = 0; i <= N; i++) { const x = lerp(X0, X1, i / N); g.lineTo(x, top(x) - S * 0.03); }
+    for (let i = N; i >= 0; i--) {
+      const x = lerp(X0, X1, i / N), edge = 1 - Math.pow(Math.abs(x) / (S * 0.42), 3);
+      g.lineTo(x, top(x) - S * 0.03 + thick[i] * Math.max(0.15, edge));
     }
+    g.closePath();
+  };
+  // soft blue shadow under the blanket, then the blanket
+  g.save(); g.translate(0, S * 0.025); g.fillStyle = 'rgba(70,95,150,.55)'; blanket(); g.fill(); g.restore();
+  const gr = g.createLinearGradient(0, -S * 0.27, 0, S * 0.02);
+  gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.6, '#e9f0fd'); gr.addColorStop(1, '#b4c5e4');
+  g.fillStyle = gr; blanket(); g.fill();
+  // lumps along the crest
+  for (let i = 0; i < 16; i++) {
+    const x = (r() - 0.5) * S * 0.72, y = top(x) - S * 0.03, rr = S * (0.025 + r() * 0.03);
+    g.fillStyle = '#fbfdff'; g.beginPath(); g.ellipse(x, y, rr * 1.4, rr, 0, 0, TAU); g.fill();
   }
-  if (!lumps.length) lumps.push([0, -S * 0.06, S * 0.06]);
-  g.fillStyle = 'rgba(70,95,150,.5)';
-  for (const [x, y, rr] of lumps) { g.beginPath(); g.ellipse(x, y + rr * 0.5, rr * 1.5, rr * 0.75, 0, 0, TAU); g.fill(); }
-  for (const [x, y, rr] of lumps) {
-    const gr = g.createLinearGradient(0, y - rr, 0, y + rr);
-    gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.6, '#eaf1fd'); gr.addColorStop(1, '#b9c9e6');
-    g.fillStyle = gr; g.beginPath(); g.ellipse(x, y, rr * 1.5, rr * 0.75, 0, 0, TAU); g.fill();
+  // a few drips hanging off the lower edge
+  for (let i = 0; i < 5; i++) {
+    const j = 3 + ((r() * (N - 6)) | 0), x = lerp(X0, X1, j / N), y = top(x) - S * 0.03 + thick[j];
+    g.fillStyle = '#d5e1f6'; g.beginPath(); g.ellipse(x, y, S * 0.018, S * (0.02 + r() * 0.025), 0, 0, TAU); g.fill();
   }
+  // needle tips poking through the snow
+  g.strokeStyle = '#2b6a40'; g.lineWidth = S * 0.014; g.lineCap = 'round';
+  for (let i = 0; i < 12; i++) {
+    const x = (r() - 0.5) * S * 0.7, y = top(x) - S * 0.02 + r() * S * 0.04;
+    const a = -Math.PI / 2 + (r() - 0.5) * 2, L = S * (0.025 + r() * 0.035);
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * L, y + Math.sin(a) * L); g.stroke();
+  }
+  // glints
+  g.fillStyle = '#fff';
+  for (let i = 0; i < 6; i++) { const x = (r() - 0.5) * S * 0.6; g.fillRect(x, top(x) - S * 0.03 + r() * S * 0.03, 1.5, 1.5); }
 }
-for (let v = 0; v < 4; v++) def(`tree/needles-${v}`, 128, 128, (g, w, h) => drawTuft(g, w, h, 100 + v), 'needle cluster: a loose tuft of small branchlets, open in the middle; mid-green, shaded by the shader', NEEDLE_K);
-for (let v = 0; v < 4; v++) def(`tree/snowcap-${v}`, 128, 128, (g, w, h) => drawTuftSnow(g, w, h, 100 + v), 'snow lying on tree/needles-N (same number, same frame); drawn over it', NEEDLE_K);
-def('tree/wood', 128, 24, (g, w, h) => {
-  const gr = g.createLinearGradient(0, 3, 0, h - 3);
-  gr.addColorStop(0, '#6b4a2c'); gr.addColorStop(0.45, '#4a3019'); gr.addColorStop(1, '#1e1209');
-  g.fillStyle = gr; g.fillRect(0, 3, w, h - 6);
-  const r = rng(5); g.strokeStyle = 'rgba(0,0,0,.35)';
-  for (let i = 0; i < 30; i++) { const y = 5 + r() * (h - 10), x = r() * w; g.beginPath(); g.moveTo(x, y); g.lineTo(x + 8 + r() * 20, y + (r() - 0.5)); g.stroke(); }
-}, 'bark, stretched along each branch (left→right = along the branch)');
-def('fx/wire', 64, 8, (g, w, h) => { g.fillStyle = 'rgba(255,255,255,.5)'; g.fillRect(0, 2, w, 4); g.fillStyle = '#fff'; g.fillRect(0, 3, w, 2); }, 'light-string wire, white (tinted dark green)');
+for (let v = 0; v < 4; v++) def(`tree/needles-${v}`, 128, 128, (g, w, h) => drawNeedles(g, w, h, 100 + v), 'needle cluster, mid-green, lit/shaded by the shader', NEEDLE_K);
+for (let v = 0; v < 4; v++) def(`tree/snowcap-${v}`, 128, 128, (g, w, h) => drawSnowcap(g, w, h, 300 + v), 'snow lying on top of tree/needles-N; drawn over it, same frame', NEEDLE_K);
 def('tree/trunk', 64, 1024, (g, w, h) => {
   const r = rng(77);
   for (let y = 0; y < h; y++) {
@@ -312,9 +296,8 @@ def('fx/rays', 256, 256, (g, w) => {
 
 // --- ornaments
 // --- C9 incandescent bulbs
-// classic vintage set: deep painted glass, warm filament behind it. Last one (warm white) is rare.
-const BULB_COLS  = ['#c4101a', '#0b7f36', '#1a36b8', '#f26200', '#f2a900', '#f6e2b8'];
-const BULB_LIGHT = [[1, 0.14, 0.05], [0.12, 0.8, 0.22], [0.22, 0.3, 1], [1, 0.4, 0.04], [1, 0.68, 0.1], [1, 0.8, 0.5]];
+const BULB_COLS  = ['#e3242b', '#1f9e4a', '#2a5ce0', '#ff8a1c', '#e8389a', '#ffd34d'];
+const BULB_LIGHT = [[1, 0.32, 0.18], [0.4, 1, 0.35], [0.4, 0.55, 1], [1, 0.58, 0.18], [1, 0.38, 0.68], [1, 0.86, 0.5]];
 const BULB_W = 0.7, BULB_H = 1.15;
 const tone = (h, k) => { const c = hex(h); return css(k > 0 ? c.map(v => lerp(v, 1, k)) : c.map(v => v * (1 + k))); };
 function drawBulb(g, w, h, col) {
@@ -325,10 +308,10 @@ function drawBulb(g, w, h, col) {
   glass.bezierCurveTo(w * 0.86, h * 0.06, w * 1.0, h * 0.48, w * 0.68, sy);
   glass.closePath();
   const gr = g.createRadialGradient(w * 0.5, h * 0.4, 1, w * 0.5, h * 0.4, w * 0.6);
-  gr.addColorStop(0, tone(col, 0.6)); gr.addColorStop(0.3, tone(col, 0.2)); gr.addColorStop(0.72, col); gr.addColorStop(1, tone(col, -0.55));
+  gr.addColorStop(0, '#fffbe6'); gr.addColorStop(0.22, tone(col, 0.45)); gr.addColorStop(0.7, col); gr.addColorStop(1, tone(col, -0.45));
   g.fillStyle = gr; g.fill(glass);
   g.save(); g.clip(glass);
-  g.fillStyle = 'rgba(255,255,255,.4)';
+  g.fillStyle = 'rgba(255,255,255,.55)';
   g.beginPath(); g.ellipse(w * 0.34, h * 0.26, w * 0.07, h * 0.14, -0.35, 0, TAU); g.fill();
   g.restore();
   g.fillStyle = '#123018'; g.fillRect(w * 0.3, sy - 2, w * 0.4, h - sy);
@@ -480,7 +463,7 @@ def('deco/lantern', 64, 128, (g, w, h) => {
 
 // ================================================================ BUILD THE WORLD
 // kinds: 0 blob, 1 light, 2 ball, 3 cane, 4 critter, 5 gift, 6 star, 7 puff, 8 shaft, 9 trunk, 10 particle, 11 lantern
-const blobs = [], lights = [], things = [], puffs = [], shafts = [], branches = [], segs = [];
+const blobs = [], lights = [], things = [], puffs = [], shafts = [], branches = [];
 const POSE = STOPS.map(camAt);   // camera at each stop
 
 function nearCameraPath(x, y, z, clear) {
@@ -488,37 +471,13 @@ function nearCameraPath(x, y, z, clear) {
   return (x - c.x) ** 2 + (z - c.z) ** 2 < clear * clear;
 }
 const snowAt = y => smooth(56, 84, y);
-function addBlob(x, y, z, size, inner, keep = false, dir = [1, 0, 0]) {
+function addBlob(x, y, z, size, inner, keep = false) {
   if (!keep && nearCameraPath(x, y, z, 1.6 + size * 0.35)) return;
   const v = 0.9 + R() * 0.2, b = lerp(0.42, 1.0, inner), sv = (R() * 4) | 0;
-  blobs.push({ kind: 0, x, y, z, size, keep, flip: R() < 0.5 ? -1 : 1,
+  blobs.push({ kind: 0, x, y, z, size, flip: R() < 0.5 ? -1 : 1, keep,
     spr: `tree/needles-${sv}`, snowSpr: `tree/snowcap-${sv}`,
     snow: clamp(snowAt(y) * 1.3 - R() * 0.3, 0, 1),
     tr: b * v * 0.95, tg: b * v, tb: b * v * 0.95 });
-}
-// a straight piece of something long (wood, wire) between two points
-function seg(A, B, th, spr, tint, lit, keep = false) {
-  segs.push({ kind: 12, ax: A[0], ay: A[1], az: A[2], bx: B[0], by: B[1], bz: B[2],
-    x: (A[0] + B[0]) / 2, y: (A[1] + B[1]) / 2, z: (A[2] + B[2]) / 2,
-    size: Math.hypot(B[0] - A[0], B[1] - A[1], B[2] - A[2]), th, spr, tint, lit, keep });
-}
-const WOOD = [1, 1, 1], WIRE = [0.09, 0.2, 0.1];
-const lerp3 = (A, B, t) => [lerp(A[0], B[0], t), lerp(A[1], B[1], t), lerp(A[2], B[2], t)];
-const segNearPath = (A, B, clear) => [0, 0.2, 0.4, 0.6, 0.8, 1].some(t => { const p = lerp3(A, B, t); return nearCameraPath(p[0], p[1], p[2], clear); });
-function wire(A, B, sag, keep = false) {   // sags between its two ends
-  const M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2 - sag, (A[2] + B[2]) / 2];
-  const q = (P, Q) => [(P[0] + Q[0]) / 2, (P[1] + Q[1]) / 2 - sag * 0.25, (P[2] + Q[2]) / 2];
-  const p1 = q(A, M), p3 = q(M, B);
-  seg(A, p1, 0.05, 'fx/wire', WIRE, 0.5, keep); seg(p1, M, 0.05, 'fx/wire', WIRE, 0.5, keep);
-  seg(M, p3, 0.05, 'fx/wire', WIRE, 0.5, keep); seg(p3, B, 0.05, 'fx/wire', WIRE, 0.5, keep);
-}
-// bulbs: mostly up, some leaning out sideways, a few hanging down — like a real strand
-function bulbTilt() { const x = R(); return x < 0.55 ? rand(-0.45, 0.45) : x < 0.87 ? (R() < 0.5 ? -1 : 1) * rand(0.7, 1.35) : Math.PI + rand(-0.45, 0.45); }
-let bulbSeq = 0;
-function bulbColour() { const c = bulbSeq++ % 5; return R() < 0.12 ? (R() < 0.4 ? 5 : (R() * 5) | 0) : c; }
-function bulb(p, keep = false) {
-  const ci = bulbColour();
-  lights.push({ kind: 1, x: p[0], y: p[1], z: p[2], ci, spr: `deco/bulb-${ci}`, tilt: bulbTilt(), ph: rand(0, TAU), keep });
 }
 {
   let y = 4.8, tier = 0;
@@ -538,18 +497,22 @@ function bulb(p, keep = false) {
       const step = 1.5 * sizeK + 0.3;
       const count = Math.max(2, Math.round((L - r0) / step));
       for (let i = 0; i < count; i++) {
-        const t = Math.min(1, 0.12 + 0.88 * (i + rand(0, 0.6)) / count);
+        const t = Math.min(1, 0.08 + 0.92 * (i + rand(0, 0.6)) / count);
         const p = pt(t), lat = rand(-0.8, 0.8) * sizeK;
-        addBlob(p[0] - sa * lat, p[1] + rand(-0.4, 0.4) * sizeK, p[2] + ca * lat, lerp(4.0, 2.8, t) * sizeK * rand(0.85, 1.2), t, false,
-          [ca + rand(-0.3, 0.3), -0.3 - t * 0.3, sa + rand(-0.3, 0.3)]);
+        addBlob(p[0] - sa * lat, p[1] + rand(-0.4, 0.4) * sizeK, p[2] + ca * lat, lerp(4.2, 2.8, t) * sizeK * rand(0.85, 1.2), t);
       }
       for (let s = 0; s < 2; s++) { // side shoots
         const t0 = rand(0.35, 0.8), p0 = pt(t0), sa2 = a + (s ? 1 : -1) * rand(0.6, 1.0), sl = L * rand(0.18, 0.3);
         for (let j = 1; j <= 3; j++) {
           const f = j / 3;
-          addBlob(p0[0] + Math.cos(sa2) * sl * f, p0[1] - f * 0.6 * sizeK, p0[2] + Math.sin(sa2) * sl * f, 2.8 * sizeK * rand(0.85, 1.15), t0, false,
-            [Math.cos(sa2), -0.3, Math.sin(sa2)]);
+          addBlob(p0[0] + Math.cos(sa2) * sl * f, p0[1] - f * 0.6 * sizeK, p0[2] + Math.sin(sa2) * sl * f, 2.8 * sizeK * rand(0.85, 1.15), t0);
         }
+      }
+      const nb = 2 + ((R() * 2.6) | 0);
+      for (let i = 0; i < nb; i++) {
+        const p = pt(rand(0.2, 1)), ci = (R() * BULB_COLS.length) | 0;
+        if (!nearCameraPath(p[0], p[1], p[2], 3)) lights.push({ kind: 1, x: p[0] + rand(-0.4, 0.4), y: p[1] + rand(-0.1, 0.3) * sizeK, z: p[2] + rand(-0.4, 0.4),
+          ci, spr: `deco/bulb-${ci}`, tilt: rand(-0.55, 0.55), ph: rand(0, TAU) });
       }
       if (y > 7 && y < 93 && R() < 0.3) { // decorative hangers (kept off the camera's path)
         const p = pt(rand(0.55, 0.95));
@@ -562,113 +525,71 @@ function bulb(p, keep = false) {
   }
   for (let yy = 92; yy < 101.5; yy += 0.55) { // the leader the star sits on
     const k = (101.5 - yy) / 9.5;
-    for (let j = 0; j < 4; j++) { const a = rand(0, TAU), r = rand(0, 1.6) * k; addBlob(Math.cos(a) * r, yy, Math.sin(a) * r, lerp(1.1, 2.3, k) * rand(0.9, 1.2), 1, false, [Math.cos(a), 0.4, Math.sin(a)]); }
+    for (let j = 0; j < 4; j++) { const a = rand(0, TAU), r = rand(0, 1.6) * k; addBlob(Math.cos(a) * r, yy, Math.sin(a) * r, lerp(1.1, 2.3, k) * rand(0.9, 1.2), 1); }
   }
 }
 
-// ---- light strands wound round the tree: one deep inside, one near the surface
-function strand(f, a0, pitch, y0, y1) {
-  let a = a0, y = y0, prev = null;
-  while (y < y1) {
-    const r = Math.max(trunkR(y) + 1.5, f * coneR(y));
-    const p = [r * Math.cos(a), y + rand(-0.6, 0.4), r * Math.sin(a)];
-    if (!nearCameraPath(p[0], p[1], p[2], 4.5)) {
-      bulb(p);
-      if (prev) { const dd = Math.hypot(p[0] - prev[0], p[1] - prev[1], p[2] - prev[2]); if (dd < 5) wire(prev, p, dd * rand(0.12, 0.28)); }
-      prev = p;
-    } else prev = null;
-    const step = rand(1.9, 3.6);
-    a += step / r; y += pitch * step / (TAU * r);
-  }
-}
-strand(0.5, 0.0, 6.5, 3, 92);
-strand(0.88, Math.PI, 7, 2, 96);
-
-// ---- the stops: clear a hollow in front of the camera, then dress it
+// ---- the middle stops: clear a hollow in front of the camera, then dress it
 function clearHollow(pose, depth, ru, rv, v0 = 0) {
-  const inside = (x, y, z) => { const q = toView(pose, x, y, z); return q.d > 0 && q.d < depth && (q.u / ru) ** 2 + ((q.v - v0) / rv) ** 2 < 1; };
-  const hit = o => o.kind === 12 ? [0, 0.2, 0.4, 0.6, 0.8, 1].some(t => inside(...lerp3([o.ax, o.ay, o.az], [o.bx, o.by, o.bz], t))) : inside(o.x, o.y, o.z);
-  for (const list of [blobs, lights, things, segs]) for (let i = list.length - 1; i >= 0; i--) if (!list[i].keep && hit(list[i])) list.splice(i, 1);
+  const inside = o => { const q = toView(pose, o.x, o.y, o.z); return q.d > 0 && q.d < depth && (q.u / ru) ** 2 + ((q.v - v0) / rv) ** 2 < 1; };
+  for (const list of [blobs, lights, things]) for (let i = list.length - 1; i >= 0; i--) if (!list[i].keep && inside(list[i])) list.splice(i, 1);
 }
-// a branch from the trunk reaching out to a point in view (u, v, d). bare = a stretch
-// near the target left without needles (somewhere to sit). Returns pt(t) along it and the target's t.
-function branchTo(pose, u, v, d, { past = 0.5, bare = 0, size = 2.4 } = {}) {
-  const T = inView(pose, u, v, d);
-  const ang = Math.atan2(T[2], T[0]), ca = Math.cos(ang), sa = Math.sin(ang);
-  const r0 = trunkR(T[1]) + 0.2, rT = Math.max(Math.hypot(T[0], T[2]), r0 + 0.8), len = rT - r0 + past;   // never inside the trunk
-  const tT = (rT - r0) / len, rise = len * 0.2, g = t => Math.pow(t, 1.6);
-  const pt = t => { const r = r0 + len * t; return [r * ca, T[1] + rise * (g(tT) - g(t)), r * sa]; };
-  seg(pt(0), pt(0.45), 0.34, 'tree/wood', WOOD, 1, true);
-  seg(pt(0.45), pt(Math.min(1, tT + 0.04)), 0.2, 'tree/wood', WOOD, 1, true);
-  const dir = [ca, -0.3, sa], tEnd = Math.min(1, tT + (bare ? bare + 0.08 : 0.03)), n = Math.round(len * tEnd / 1.3);
+function bough(pose, u0, u1, v, d, size = 2.6) { // a run of needle clusters across the view
+  const n = Math.max(2, Math.round(Math.abs(u1 - u0) * d / 1.1));
   for (let i = 0; i <= n; i++) {
-    const t = 0.3 + (tEnd - 0.3) * i / n;
-    if (Math.abs(t - tT) < bare) continue;
-    const p = pt(t), lat = rand(-0.5, 0.5);
-    addBlob(p[0] - sa * lat, p[1] + rand(-0.15, 0.25), p[2] + ca * lat, size * (1.1 - 0.35 * t) * rand(0.9, 1.1), 0.95, true, [ca + rand(-0.2, 0.2), -0.3, sa + rand(-0.2, 0.2)]);
+    const p = inView(pose, lerp(u0, u1, i / n), v + rand(-0.01, 0.01), d + rand(-0.6, 0.6));
+    addBlob(p[0], p[1], p[2], size * rand(0.85, 1.15), 0.9, true);
   }
-  for (const [t0, side] of [[0.55, 1], [0.75, -1]]) {                 // two side shoots
-    const p0 = pt(t0), a2 = ang + side * 0.8;
-    for (let j = 1; j <= 2; j++) addBlob(p0[0] + Math.cos(a2) * j * 1.1, p0[1] - j * 0.2, p0[2] + Math.sin(a2) * j * 1.1, size * 0.75, 0.9, true, [Math.cos(a2), -0.3, Math.sin(a2)]);
-  }
-  return { pt, tT };
-}
-// a hand-placed swag of bulbs on a sagging wire, from (u0,v0) to (u1,v1) at depth d
-function drape(pose, u0, v0, u1, v1, d, n, sagV = 0.1) {
-  const A = inView(pose, u0, v0, d), B = inView(pose, u1, v1, d + rand(-1, 1)), sag = sagV * d / 0.95;
-  const at = t => [lerp(A[0], B[0], t), lerp(A[1], B[1], t) - sag * 4 * t * (1 - t), lerp(A[2], B[2], t)];
-  const ts = [0]; for (let i = 1; i < n; i++) ts.push((i + rand(-0.3, 0.3)) / n); ts.push(1);
-  for (let i = 0; i < ts.length; i++) {
-    const p = at(ts[i]);
-    if (i > 0 && i < ts.length - 1) bulb(p, true);
-    if (i > 0) { const q = at(ts[i - 1]); wire(q, p, Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) * 0.12, true); }
+  // a string of bulbs along the bough, in the classic colour order
+  const nb = Math.max(1, Math.round(Math.abs(u1 - u0) * d / 1.6));
+  for (let i = 0; i < nb; i++) {
+    const p = inView(pose, lerp(u0, u1, (i + 0.5) / nb), v - 0.012, d - 1.2);
+    const ci = (bulbSeq++) % BULB_COLS.length;
+    lights.push({ kind: 1, x: p[0], y: p[1], z: p[2], ci, spr: `deco/bulb-${ci}`, tilt: rand(-0.35, 0.35), ph: rand(0, TAU), keep: true });
   }
 }
+let bulbSeq = 0;
 const anim = () => ({ h: 0, act: -1, sw: rand(0, TAU) });
 const pointLights = [];
-function lanternAt(p) {
+function lantern(pose, u, v, d) {
+  const p = inView(pose, u, v, d);
   things.push({ kind: 11, x: p[0], y: p[1], z: p[2], len: 1.6, sw: rand(0, TAU), keep: true });
   pointLights.push({ x: p[0], y: p[1] - 1.1, z: p[2], r: 11, col: [1.7, 1.0, 0.45] });
 }
 {
-  // STOP 2 — ornament hollow: each ornament on its own branch, a lantern, a swag of bulbs
+  // STOP 2 — ornament hollow
   const P = POSE[1];
   clearHollow(P, 15, 0.72, 0.5);
-  clearHollow(P, 6.5, 1.25, 0.85);   // nothing big and blurry right in front of the lens
   const spots = [[-0.52, 0.30, 9.5], [-0.18, 0.40, 11.5], [0.17, 0.27, 9], [0.5, 0.38, 11]];
   LINKS.ornaments.forEach((page, i) => {
-    const [u, v, d] = spots[i], br = branchTo(P, u, v + 0.03, d + 0.3, { past: 0.3 }), p = br.pt(br.tT);
-    things.push({ kind: 2, x: p[0], y: p[1] - 0.15, z: p[2], rad: 0.9, spr: `link/${page}`, page, keep: true, ...anim() });
+    const [u, v, d] = spots[i], p = inView(P, u, v, d);
+    bough(P, u - 0.14, u + 0.14, v + 0.05, d + 0.5);
+    things.push({ kind: 2, x: p[0], y: p[1], z: p[2], rad: 0.9, spr: `link/${page}`, page, keep: true, ...anim() });
   });
-  { const br = branchTo(P, 0.04, 0.33, 13.5, { past: 0.3, size: 2.8 }), p = br.pt(br.tT); lanternAt(p); }
-  drape(P, -0.78, 0.47, 0.02, 0.4, 11.5, 4, 0.08);
-  drape(P, 0.32, 0.5, 0.82, 0.43, 12.5, 3, 0.06);
+  lantern(P, 0.02, 0.3, 13);
+  bough(P, -0.22, 0.22, 0.38, 13.5, 3);
 }
 {
-  // STOP 3 — each creature on its own branch, canes hanging, a lantern, a swag of bulbs
+  // STOP 3 — creature bough
   const P = POSE[2];
   clearHollow(P, 14, 0.75, 0.5);
-  clearHollow(P, 6.5, 1.25, 0.85);
+  bough(P, -0.9, 0.9, -0.2, 9, 2.8);                 // the branch they sit on
   LINKS.creatures.forEach((page, i) => {
-    const br = branchTo(P, [-0.3, 0.24][i], [-0.2, -0.16][i], [9, 9.8][i], { past: 0.6, bare: 0.07, size: 2.6 });
-    const p = br.pt(br.tT);
-    things.push({ kind: 4, x: p[0], y: p[1] + 0.12, z: p[2], rad: 1.1, spr: `link/${page}`, page, keep: true, ...anim() });
+    const p = inView(P, [-0.26, 0.2][i], -0.2, 9 - 0.6);
+    things.push({ kind: 4, x: p[0], y: p[1] + 0.25, z: p[2], rad: 1.1, spr: `link/${page}`, page, keep: true, ...anim() });
   });
   LINKS.canes.forEach((page, i) => {
-    const [u, v, d] = [[-0.6, 0.36, 9], [0.58, 0.4, 10]][i], br = branchTo(P, u, v + 0.03, d + 0.3, { past: 0.3 }), p = br.pt(br.tT);
-    things.push({ kind: 3, x: p[0], y: p[1] - 0.1, z: p[2], len: 2.3, spr: `link/${page}`, page, keep: true, ...anim() });
+    const [u, v, d] = [[-0.56, 0.36, 9], [0.55, 0.4, 10]][i], p = inView(P, u, v, d);
+    bough(P, u - 0.13, u + 0.13, v + 0.05, d + 0.5);
+    things.push({ kind: 3, x: p[0], y: p[1], z: p[2], len: 2.3, spr: `link/${page}`, page, keep: true, ...anim() });
   });
-  { const br = branchTo(P, -0.02, 0.36, 11, { past: 0.3, size: 2.8 }), p = br.pt(br.tT); lanternAt(p); }
-  drape(P, -0.85, 0.5, -0.2, 0.44, 11, 4, 0.07);
-  drape(P, 0.2, 0.47, 0.88, 0.52, 12, 4, 0.08);
+  lantern(P, 0.0, 0.34, 13);
+  bough(P, -0.2, 0.22, 0.42, 13.5, 3);
 }
 {
-  // STOP 1 — gifts on the floor, two lit branches hanging over them
+  // STOP 1 — gifts on the floor, a lit bough hanging over them
   clearHollow(POSE[0], 15, 0.85, 0.22, 0.06);
-  branchTo(POSE[0], -0.42, 0.42, 10.5, { past: 4, size: 2.8 });
-  branchTo(POSE[0], 0.36, 0.47, 11.5, { past: 4, size: 2.8 });
-  drape(POSE[0], -0.75, 0.36, 0.05, 0.4, 9.5, 4, 0.07);
-  drape(POSE[0], 0.12, 0.42, 0.72, 0.37, 10.5, 3, 0.06);
+  bough(POSE[0], -0.62, 0.62, 0.4, 10, 3);
   const a0 = facing(POSE[0].phi);
   const slots = [[-0.42, 10.5], [-0.14, 13.5], [0.12, 9], [0.38, 12.5]];
   LINKS.gifts.forEach((page, i) => {
@@ -710,7 +631,7 @@ const trunk = { kind: 9, x: 0, y: 0, z: 0 };
 const DUST = Array.from({ length: 520 }, () => ({ kind: 10, snow: 0, u: R(), v: R(), w: R(), ph: rand(0, TAU), sz: rand(0.05, 0.12) }));
 const SNOW = Array.from({ length: 1100 }, () => ({ kind: 10, snow: 1, u: R(), v: R(), w: R(), ph: rand(0, TAU), sz: rand(0.06, 0.15) }));
 
-const world = [...blobs, ...lights, ...things, ...puffs, ...shafts, ...segs];
+const world = [...blobs, ...lights, ...things, ...puffs, ...shafts];
 const interactive = things.filter(o => o.page);
 
 // ================================================================ ATLAS (placeholders + your art)
@@ -760,7 +681,6 @@ window.__sprites = SPEC.map(s => ({ name: s.name, w: s.w, h: s.h, notes: s.notes
 for (const o of world) {
   if (o.spr) o.uv = SPR[o.spr];
   if (o.snowSpr) o.snowUv = SPR[o.snowSpr];
-  if (o.kind === 12) o.uv = SPR[o.spr];
   if (o.kind === 5) { o.uvBox = SPR[o.spr + '-box']; o.uvLid = SPR[o.spr + '-lid']; }
 }
 const UV = { glow: SPR['fx/glow'], flake: SPR['fx/flake'], disc: SPR['fx/disc'], shadow: SPR['fx/shadow'], shaft: SPR['fx/shaft'], rays: SPR['fx/rays'], trunk: SPR['tree/trunk'], lantern: SPR['deco/lantern'] };
@@ -1100,9 +1020,9 @@ function emit(o, t) {
       const L = BULB_LIGHT[o.ci], fl = 0.94 + 0.06 * Math.sin(t * 0.6 + o.ph);
       const c = bOff(o.x, o.y, o.z, 0, -BULB_H * 0.56, o.tilt);
       push(c[0], c[1], c[2], 0, 6, 6, 0.5, 0.5, UV.glow, L[0], L[1], L[2], 0.12 * fl * smooth(3, 8, o.d), 1, 0, 0.35, 1.0);
-      push(c[0], c[1], c[2], 0, 2.0, 2.0, 0.5, 0.5, UV.glow, L[0], L[1], L[2], 0.6 * fl, 1, 0, 0.35, 1.0);
+      push(c[0], c[1], c[2], 0, 2.2, 2.2, 0.5, 0.5, UV.glow, L[0], L[1], L[2], 0.5 * fl, 1, 0, 0.35, 1.0);
       push(o.x, o.y, o.z, o.tilt, BULB_W, BULB_H, 0.5, 1, o.uv, 1, 1, 1, 1, 0, 0, 0.45, 1.6);
-      push(c[0], c[1], c[2], 0, 0.7, 0.7, 0.5, 0.5, UV.glow, lerp(L[0], 1, 0.45), lerp(L[1], 0.85, 0.45), lerp(L[2], 0.6, 0.45), 0.45 * fl, 1, 0, 0.35, 1.0);
+      push(c[0], c[1], c[2], 0, 0.8, 0.8, 0.5, 0.5, UV.glow, 1, 0.92, 0.75, 0.5 * fl, 1, 0, 0.35, 1.0);
       break;
     }
     case 2: {
@@ -1184,18 +1104,6 @@ function emit(o, t) {
       const bk = 1 + Math.max(0, 3.5 - o.d) * 1.3, sz = o.sz * bk, a = Math.min(1, o.a / (bk * bk) * (bk > 1 ? 1.6 : 1));
       if (o.snow) push(o.x, o.y, o.z, 0, sz * 1.7, sz * 1.7, 0.5, 0.5, bk > 1.4 ? UV.glow : UV.flake, 0.88, 0.92, 1, a, 0, 0, 0.55, -1.0);
       else push(o.x, o.y, o.z, 0, sz, sz, 0.5, 0.5, UV.glow, 1, 0.8, 0.5, a, 1, 0, 0.5, -1.0);
-      break;
-    }
-    case 12: { // a straight piece of wood or wire, drawn as a strip between its two ends
-      const ax = o.ax - cam.x, az = o.az - cam.z, bx = o.bx - cam.x, bz = o.bz - cam.z;
-      const da = -(ax * cam.sin + az * cam.cos), db = -(bx * cam.sin + bz * cam.cos);
-      if (da < NEAR || db < NEAR) break;
-      const sa = F / da, sb = F / db;
-      const x1 = (ax * cam.cos - az * cam.sin) * sa, y1 = -(o.ay - cam.y) * sa;
-      const x2 = (bx * cam.cos - bz * cam.sin) * sb, y2 = -(o.by - cam.y) * sb;
-      // anchor at end A and reach exactly to B on screen (perspective moves a 3D midpoint off the 2D one)
-      const lw = Math.hypot(x2 - x1, y2 - y1) / sa;
-      push(o.ax, o.ay, o.az, Math.atan2(y2 - y1, x2 - x1), lw, o.th, 0, 0.5, o.uv, o.tint[0], o.tint[1], o.tint[2], 1, 0, o.lit, 1, 4.5);
       break;
     }
     case 11: { // lantern + its glow
