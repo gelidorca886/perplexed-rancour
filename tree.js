@@ -570,7 +570,6 @@ function strand(f, a0, pitch, y0, y1) {
     const p = [r * Math.cos(a), y + rb(-0.6, 0.4), r * Math.sin(a)];
     if (!nearCameraPath(p[0], p[1], p[2], 4.5)) {
       bulb(p);
-      if (prev) { const dd = Math.hypot(p[0] - prev[0], p[1] - prev[1], p[2] - prev[2]); if (dd < 5) wire(prev, p, dd * rb(0.12, 0.28)); }
       prev = p;
     } else prev = null;
     const step = rb(1.9, 3.6);
@@ -587,7 +586,6 @@ function drape(pose, u0, v0, u1, v1, d, n, sagV = 0.08) {
   for (let i = 0; i < ts.length; i++) {
     const p = at(ts[i]);
     if (i > 0 && i < ts.length - 1) bulb(p, true);
-    if (i > 0) { const q = at(ts[i - 1]); wire(q, p, Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) * 0.12, true); }
   }
 }
 
@@ -638,7 +636,7 @@ function lantern(pose, u, v, d) {
   // STOP 3 — creature bough
   const P = POSE[2];
   clearHollow(P, 14, 0.75, 0.5);
-  bough(P, -0.9, 0.9, -0.2, 9, 2.8);                 // the branch they sit on
+  { const n0 = blobs.length; bough(P, -0.9, 0.9, -0.2, 9, 2.8); blobs.length = n0; }   // old ledge: still run so nothing else moves, then thrown away
   LINKS.creatures.forEach((page, i) => {
     const p = inView(P, [-0.26, 0.2][i], -0.2, 9 - 0.6);
     things.push({ kind: 4, x: p[0], y: p[1] + 0.25, z: p[2], rad: 1.1, spr: `link/${page}`, page, keep: true, ...anim() });
@@ -700,6 +698,21 @@ const trunk = { kind: 9, x: 0, y: 0, z: 0 };
 const DUST = Array.from({ length: 520 }, () => ({ kind: 10, snow: 0, u: R(), v: R(), w: R(), ph: rand(0, TAU), sz: rand(0.05, 0.12) }));
 const SNOW = Array.from({ length: 1100 }, () => ({ kind: 10, snow: 1, u: R(), v: R(), w: R(), ph: rand(0, TAU), sz: rand(0.06, 0.15) }));
 
+// creatures: each on its own branch, coming in from further back and off to its side.
+// Built last so it can't shift anything else's position.
+{
+  const P = POSE[2];
+  things.filter(o => o.kind === 4).forEach((o, i) => {
+    const [u, side] = [[-0.26, -1], [0.2, 1]][i];
+    const base = inView(P, u + side * 0.6, -0.02, 13.5);   // further back, out to the side, a little higher
+    const seat = inView(P, u, -0.215, 8.6);                 // where it sits
+    const tip  = inView(P, u - side * 0.1, -0.24, 8.1);     // just past it
+    const run = (A, B, n, s0, s1) => { for (let k = 0; k <= n; k++) { const t = k / n, p = lerp3(A, B, t); addBlob(p[0], p[1] + rand(-0.1, 0.1), p[2], lerp(s0, s1, t) * rand(0.9, 1.1), 0.9, true); } };
+    run(base, seat, Math.max(3, Math.round(Math.hypot(seat[0] - base[0], seat[2] - base[2]) / 1.1)), 2.9, 2.3);
+    run(seat, tip, 1, 2.2, 1.8);
+    o.x = seat[0]; o.y = seat[1] + 0.12; o.z = seat[2];
+  });
+}
 const world = [...blobs, ...lights, ...things, ...puffs, ...shafts, ...segs];
 const interactive = things.filter(o => o.page);
 
@@ -735,6 +748,107 @@ let ATLAS = 2048, layout = packInto(ATLAS);
 if (!layout) { ATLAS = 4096; layout = packInto(ATLAS); }
 const atlas = mk(ATLAS, ATLAS), ag = atlas.getContext('2d');
 const SPR = {};
+// ---------------------------------------------------------------- ART STYLE experiments
+// ?style=penguin | paper | gouache | lino  — restyles every sprite as it's drawn into the
+// atlas (not the soft fx/* glows, mist, flakes), plus matching shading in the shader.
+const STYLE = new URLSearchParams(location.search).get('style') || '';
+const STYLE_FX = ({ penguin: { cel: 3, fog: 0.6, dof: 0.35 }, paper: { cel: 4, fog: 0.85, dof: 0.5 },
+  gouache: { cel: 0, fog: 1.1, dof: 1.2 }, lino: { cel: 2, fog: 0.75, dof: 0.3 } })[STYLE] || { cel: 0, fog: 1, dof: 1 };
+function rgb2hsl(r, g, b) {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+  if (mx === mn) return [0, 0, l];
+  const d = mx - mn, s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  const h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h / 6, s, l];
+}
+function hsl2rgb(h, s, l) {
+  if (!s) return [l, l, l];
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  const f = t => { t = (t + 1) % 1; return t < 1 / 6 ? p + (q - p) * 6 * t : t < 0.5 ? q : t < 2 / 3 ? p + (q - p) * (2 / 3 - t) * 6 : p; };
+  return [f(h + 1 / 3), f(h), f(h - 1 / 3)];
+}
+function stylize(g, x0, y0, w, h, name) {
+  if (!STYLE || name.startsWith('fx/')) return;
+  const N = w * h, img = g.getImageData(x0, y0, w, h), d = img.data, r = rng(name.length * 977 + w * 7 + h);
+  const idx = (x, y) => y * w + x;
+  const blur = (src, R) => {   // separable box blur on a Float32 array
+    const t = new Float32Array(N), o = new Float32Array(N);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let a = 0, n = 0; for (let k = -R; k <= R; k++) { const xx = x + k; if (xx >= 0 && xx < w) { a += src[idx(xx, y)]; n++; } } t[idx(x, y)] = a / n; }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let a = 0, n = 0; for (let k = -R; k <= R; k++) { const yy = y + k; if (yy >= 0 && yy < h) { a += t[idx(x, yy)]; n++; } } o[idx(x, y)] = a / n; }
+    return o;
+  };
+  const dilate = (mask, R) => {
+    const o = new Uint8Array(N);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (mask[idx(x, y)])
+      for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) if (dx * dx + dy * dy <= R * R) { const xx = x + dx, yy = y + dy; if (xx >= 0 && yy >= 0 && xx < w && yy < h) o[idx(xx, yy)] = 1; }
+    return o;
+  };
+  let A = new Float32Array(N), Rc = new Float32Array(N), Gc = new Float32Array(N), Bc = new Float32Array(N);
+  for (let i = 0; i < N; i++) { A[i] = d[i * 4 + 3] / 255; const k = A[i] > 0 ? 1 / 255 : 0; Rc[i] = d[i * 4] * k; Gc[i] = d[i * 4 + 1] * k; Bc[i] = d[i * 4 + 2] * k; }
+  const foliage = name.startsWith('tree/needles');
+  if (foliage && STYLE !== 'gouache') {            // close the gaps between needles into chunky shapes
+    const wR = blur(Rc.map((v, i) => v * A[i]), 2), wG = blur(Gc.map((v, i) => v * A[i]), 2), wB = blur(Bc.map((v, i) => v * A[i]), 2);
+    A = blur(A, 2);
+    for (let i = 0; i < N; i++) if (A[i] > 0.001) { Rc[i] = wR[i] / A[i]; Gc[i] = wG[i] / A[i]; Bc[i] = wB[i] / A[i]; }
+    for (let i = 0; i < N; i++) A[i] = Math.min(1, A[i] * 1.8);
+  }
+  const out = new ImageData(w, h), o = out.data;
+  const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const soft = (thr) => A.map(a => sstep(thr - 0.07, thr + 0.07, a));            // anti-aliased fill mask
+  const ringOf = (M, R) => blur(M, R).map(v => sstep(0.03, 0.22, v));           // anti-aliased outline grown out of it
+  const mixc = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+  const put = (i, c, a) => { o[i * 4] = c[0] * 255; o[i * 4 + 1] = c[1] * 255; o[i * 4 + 2] = c[2] * 255; o[i * 4 + 3] = a * 255; };
+  const S = Math.min(w, h);
+  if (STYLE === 'penguin') {          // flat cel colours, chunky dark outline
+    const M = soft(0.4), ring = ringOf(M, Math.max(2, Math.round(S / 40))), OUT = [0.1, 0.07, 0.16];
+    for (let i = 0; i < N; i++) {
+      const a = Math.max(M[i], ring[i]); if (a < 0.003) continue;
+      let [hh, ss, ll] = rgb2hsl(Rc[i], Gc[i], Bc[i]);
+      ss = Math.min(1, ss * 1.3 + 0.05); ll = ll < 0.26 ? 0.24 : ll < 0.48 ? 0.42 : ll < 0.8 ? 0.62 : 0.93;
+      put(i, mixc(OUT, hsl2rgb(hh, ss, ll), M[i] / a), a);
+    }
+  } else if (STYLE === 'paper') {     // two-tone construction paper, scissor edges, grain, drop shadow
+    if (foliage) { A = blur(A, 2); for (let i = 0; i < N; i++) A[i] = Math.min(1, A[i] * 1.6); }
+    const M = soft(0.5 + (r() - 0.5) * 0.1);
+    const sx = Math.max(3, Math.round(S / 26)), sy = Math.max(3, Math.round(S / 20));
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = idx(x, y), sh = x >= sx && y >= sy ? M[idx(x - sx, y - sy)] * 0.5 : 0;
+      let [hh, ss, ll] = rgb2hsl(Rc[i], Gc[i], Bc[i]);
+      ll = ll < 0.5 ? 0.34 : 0.62; if (rgb2hsl(Rc[i], Gc[i], Bc[i])[2] > 0.85) ll = 0.9; ss *= 0.85;
+      const gr = 0.92 + 0.08 * r(), c = hsl2rgb(hh, ss, ll), a = M[i] + sh * (1 - M[i]);
+      if (a < 0.003) continue;
+      put(i, mixc([0, 0, 0], [c[0] * gr, c[1] * gr, c[2] * gr], M[i] / a), a);
+    }
+  } else if (STYLE === 'gouache') {   // soft, warm, brushy, dry edges
+    A = blur(A, 2); Rc = blur(Rc, 2); Gc = blur(Gc, 2); Bc = blur(Bc, 2);
+    const G = 7, cells = Math.ceil(w / G) + 2, rows = Math.ceil(h / G) + 2, nz = Array.from({ length: cells * rows }, () => r());
+    const noise = (x, y) => { const fx = x / G, fy = y / G, ix = fx | 0, iy = fy | 0, tx = fx - ix, ty = fy - iy, n = (a, b) => nz[b * cells + a];
+      return lerp(lerp(n(ix, iy), n(ix + 1, iy), tx), lerp(n(ix, iy + 1), n(ix + 1, iy + 1), tx), ty); };
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = idx(x, y); if (A[i] < 0.01) continue;
+      let [hh, ss, ll] = rgb2hsl(Rc[i], Gc[i], Bc[i]);
+      const n1 = noise(x, y), n2 = noise(x * 2.7 + 13, y * 0.6);          // blotches + horizontal brush drag
+      hh += (n1 - 0.5) * 0.05; ss = ss * 0.7 * (0.8 + 0.4 * n2); ll = ll * 0.85 + 0.1 + (n2 - 0.5) * 0.12;
+      const m = 0.75 + 0.45 * n1 + (r() - 0.5) * 0.08;
+      const c = hsl2rgb((hh + 1) % 1, Math.min(1, ss), Math.min(0.95, ll));
+      const a = A[i] < 0.9 ? Math.min(1, A[i] * (0.4 + 1.2 * n2) * (0.7 + 0.6 * r())) : A[i];
+      put(i, [Math.min(1, c[0] * m + 0.03), c[1] * m, Math.max(0, c[2] * m - 0.03)], Math.min(1, a));
+    }
+  } else if (STYLE === 'lino') {      // three inks: dark, a hatched mid colour, pale paper
+    const M = soft(0.45), ring = ringOf(M, Math.max(1, Math.round(S / 70))), INK = [0.11, 0.09, 0.07];
+    const per = Math.max(7, Math.round(S / 14));
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = idx(x, y), a = Math.max(M[i], ring[i]); if (a < 0.003) continue;
+      const [hh, ss, ll] = rgb2hsl(Rc[i], Gc[i], Bc[i]);
+      let c;
+      if (ll < 0.28) c = INK;
+      else if (ll < 0.62) c = (x + y) % per < per * 0.3 ? INK : hsl2rgb(hh, Math.min(0.6, ss), 0.42);
+      else c = r() < 0.03 ? INK : hsl2rgb(hh, Math.min(0.35, ss), 0.8);
+      put(i, mixc(INK, c, M[i] / a), a);
+    }
+  }
+  g.putImageData(out, x0, y0);
+}
 for (const [s, x, y, w, h] of layout) {
   ag.save(); ag.translate(x, y); ag.beginPath(); ag.rect(0, 0, w, h); ag.clip();
   const im = artImgs[s.name];
@@ -744,6 +858,7 @@ for (const [s, x, y, w, h] of layout) {
     ag.drawImage(im, (w - dw) / 2, (h - dh) / 2, dw, dh);
   } else s.draw(ag, w, h);
   ag.restore();
+  stylize(ag, x, y, w, h, s.name);
   SPR[s.name] = [x / ATLAS, y / ATLAS, (x + w) / ATLAS, (y + h) / ATLAS];
 }
 window.__sprites = SPEC.map(s => ({ name: s.name, w: s.w, h: s.h, notes: s.notes, art: !!artImgs[s.name] }));
@@ -800,7 +915,7 @@ void main(){
 }`;
 const FS = `#version 300 es
 precision highp float;
-uniform sampler2D u_tex; uniform vec3 u_haze; uniform float u_k, u_camY, u_focus, u_back;
+uniform sampler2D u_tex; uniform vec3 u_haze; uniform float u_k, u_camY, u_focus, u_back, u_cel, u_dofk;
 uniform vec3 u_lw, u_lm, u_lc;
 uniform vec4 u_pl[${NPL}]; uniform vec3 u_plc[${NPL}];
 in vec2 v_uv; in vec4 v_tint; in vec3 v_p; in float v_d; in vec3 v_wp; in float v_fade; in float v_dof;
@@ -808,7 +923,7 @@ out vec4 o;
 void main(){
   float d = v_d;
   float bias = ((1.0 - smoothstep(0.8, 6.0, d)) * 3.2 + smoothstep(30.0, 90.0, d) * 1.2
-              + smoothstep(u_focus + 3.0, u_focus + 18.0, d) * 2.4 * u_back) * v_dof;
+              + smoothstep(u_focus + 3.0, u_focus + 18.0, d) * 2.4 * u_back) * v_dof * u_dofk;
   vec4 t = texture(u_tex, v_uv, bias);
   vec3 base = t.rgb * v_tint.rgb;
   vec3 col = base;
@@ -819,6 +934,7 @@ void main(){
     float under = smoothstep(0.0, 1.1, elev);
     float near = 1.0 - smoothstep(1.0, 8.0, d);
     float L = mix(1.0, 0.3, under) * mix(1.0, 0.2, near);
+    if (u_cel > 0.0) L = min(1.0, (floor(L * u_cel) + 1.0) / u_cel);   // stepped (cel) shading
     vec3 pl = vec3(0.0);
     for (int i = 0; i < ${NPL}; i++) {
       vec3 dv = v_wp - u_pl[i].xyz;
@@ -848,7 +964,7 @@ gl.linkProgram(prog);
 if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
 gl.useProgram(prog);
 const U = {};
-for (const n of ['u_cam', 'u_sc', 'u_F', 'u_hz', 'u_vp', 'u_tex', 'u_haze', 'u_k', 'u_camY', 'u_lw', 'u_lm', 'u_lc', 'u_pl', 'u_plc', 'u_focus', 'u_back']) U[n] = gl.getUniformLocation(prog, n);
+for (const n of ['u_cam', 'u_sc', 'u_F', 'u_hz', 'u_vp', 'u_tex', 'u_haze', 'u_k', 'u_camY', 'u_lw', 'u_lm', 'u_lc', 'u_pl', 'u_plc', 'u_focus', 'u_back', 'u_cel', 'u_dofk']) U[n] = gl.getUniformLocation(prog, n);
 
 const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
 const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
@@ -1244,7 +1360,8 @@ function frame(now) {
   cam.x = cam.R * cam.sin; cam.z = cam.R * cam.cos;
   cam.hzPx = c.hz * H;
   const at = atmosAt(cam.y);
-  at.k *= lerp(FOG_AT_STOP, FOG_BETWEEN, betweenness(pNow));
+  at.k *= lerp(FOG_AT_STOP, FOG_BETWEEN, betweenness(pNow)) * STYLE_FX.fog;
+  gl.uniform1f(U.u_cel, STYLE_FX.cel); gl.uniform1f(U.u_dofk, STYLE_FX.dof);
 
   drawSky(t, dt, at);
 
