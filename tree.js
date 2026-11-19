@@ -496,12 +496,12 @@ function nearCameraPath(x, y, z, clear) {
   return (x - c.x) ** 2 + (z - c.z) ** 2 < clear * clear;
 }
 const snowAt = y => smooth(56, 84, y);
-function addBlob(x, y, z, size, inner, keep = false) {
+function addBlob(x, y, z, size, inner, keep = false, rnd = R) {
   if (!keep && nearCameraPath(x, y, z, 1.6 + size * 0.35)) return;
-  const v = 0.9 + R() * 0.2, b = lerp(0.42, 1.0, inner), sv = (R() * 4) | 0;
-  blobs.push({ kind: 0, x, y, z, size, flip: R() < 0.5 ? -1 : 1, keep,
+  const v = 0.9 + rnd() * 0.2, b = lerp(0.42, 1.0, inner), sv = (rnd() * 4) | 0;
+  blobs.push({ kind: 0, x, y, z, size, flip: rnd() < 0.5 ? -1 : 1, keep,
     spr: `tree/needles-${sv}`, snowSpr: `tree/snowcap-${sv}`,
-    snow: clamp(snowAt(y) * 1.3 - R() * 0.3, 0, 1),
+    snow: clamp(snowAt(y) * 1.3 - rnd() * 0.3, 0, 1),
     tr: b * v * 0.95, tg: b * v, tb: b * v * 0.95 });
 }
 {
@@ -554,11 +554,21 @@ function addBlob(x, y, z, size, inner, keep = false) {
   }
 }
 
-// ---- a bare core round the trunk (real firs are bare inside), so the trunk shows through.
-// Filtered after the fact, so every other cluster keeps its exact position.
-for (let i = blobs.length - 1; i >= 0; i--) {
-  const o = blobs[i];
-  if (o.y < 90 && Math.hypot(o.x, o.z) < 0.22 * coneR(o.y) + 1.5) blobs.splice(i, 1);
+// ---- DENSITY. Extra clusters on top of the original tree (own random source, so nothing
+// already placed moves). More the higher you go; plus an outer layer near the top so the
+// silhouette reads full from outside. The stops clear their framing afterwards as usual.
+const RD = rng(9090), rd = (a, b) => a + (b - a) * RD();
+for (const br of branches) {
+  const ca = Math.cos(br.a), sa = Math.sin(br.a), k = Math.max(br.sizeK, 0.85);
+  const extra = Math.round(lerp(1, 7, smooth(25, 85, br.y)));
+  for (let i = 0; i < extra; i++) {
+    const t = rd(0.3, 1.0), p = br.pt(t), lat = rd(-1.5, 1.5) * k;
+    addBlob(p[0] - sa * lat, p[1] + rd(-0.6, 0.4) * k, p[2] + ca * lat, lerp(4.0, 3.0, t) * k * rd(0.85, 1.15), t, false, RD);
+  }
+}
+for (let i = 0; i < 1600; i++) {
+  const y = 55 + Math.pow(RD(), 0.85) * 45, a = rd(0, TAU), r = coneR(y) * rd(0.68, 1.02);
+  addBlob(Math.cos(a) * r, y - rd(0, 0.8), Math.sin(a) * r, rd(2.4, 3.4) * lerp(1, 0.7, smooth(85, 100, y)), 1, false, RD);
 }
 
 // ---- LIGHTS. Their own random source, so changing them never moves a branch.
@@ -599,7 +609,7 @@ function strand(f, a0, pitch, y0, y1) {
   }
 }
 strand(0.5, 0.0, 6.5, 3, 92);     // deep inside
-strand(0.88, Math.PI, 7, 2, 96);  // near the surface
+strand(1.0, Math.PI, 7, 2, 96);   // on the surface
 // a hand-hung swag at a stop: from (u0,v0) to (u1,v1) at depth d, n bulbs, sagging
 function drape(pose, u0, v0, u1, v1, d, n, sagV = 0.08) {
   const A = inView(pose, u0, v0, d), B = inView(pose, u1, v1, d + rb(-1, 1)), sag = sagV * d / 0.95;
@@ -1311,7 +1321,6 @@ function frame(now) {
     if (o.sx < -ext || o.sx > W + ext || o.sy < -ext - 20 || o.sy > H + ext) continue;
     vis.push(o);
   }
-  trunk.d = cam.R; vis.push(trunk);
   updateParticles(DUST, t, 1 - smooth(30, 60, cam.y), vis);
   updateParticles(SNOW, t, smooth(40, 68, cam.y), vis);
   vis.sort((a, b) => b.d - a.d);
